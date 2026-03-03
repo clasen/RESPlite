@@ -79,14 +79,14 @@ await srv.close();
 ```javascript
 // SET with expiration
 await client.set('session:abc', JSON.stringify({ user: 'alice' }));
-await client.expire('session:abc', 3600);       // expire in 1 hour
-console.log(await client.ttl('session:abc'));     // → 3600 (approx)
+await client.expire('session:abc', 3600);      // expire in 1 hour
+console.log(await client.ttl('session:abc'));  // → 3600 (approx)
 
 // Atomic counters
 await client.set('visits', '0');
 await client.incr('visits');
 await client.incrBy('visits', 10);
-console.log(await client.get('visits'));          // → "11"
+console.log(await client.get('visits'));       // → "11"
 
 // Multi-key operations
 await client.mSet(['k1', 'v1', 'k2', 'v2']);
@@ -94,9 +94,9 @@ const values = await client.mGet(['k1', 'k2', 'missing']);
 console.log(values);  // → ["v1", "v2", null]
 
 // Key existence and deletion
-console.log(await client.exists('k1'));           // → 1
+console.log(await client.exists('k1'));        // → 1
 await client.del('k1');
-console.log(await client.exists('k1'));           // → 0
+console.log(await client.exists('k1'));        // → 0
 ```
 
 ### Hashes
@@ -104,13 +104,13 @@ console.log(await client.exists('k1'));           // → 0
 ```javascript
 await client.hSet('user:1', { name: 'Martin', age: '42', city: 'BCN' });
 
-console.log(await client.hGet('user:1', 'name'));   // → "Martin"
+console.log(await client.hGet('user:1', 'name'));     // → "Martin"
 
 const user = await client.hGetAll('user:1');
 console.log(user);  // → { name: "Martin", age: "42", city: "BCN" }
 
 await client.hIncrBy('user:1', 'age', 1);
-console.log(await client.hGet('user:1', 'age'));     // → "43"
+console.log(await client.hGet('user:1', 'age'));      // → "43"
 
 console.log(await client.hExists('user:1', 'email')); // → false
 ```
@@ -119,8 +119,8 @@ console.log(await client.hExists('user:1', 'email')); // → false
 
 ```javascript
 await client.sAdd('tags', ['node', 'sqlite', 'redis']);
-console.log(await client.sMembers('tags'));          // → ["node", "sqlite", "redis"]
-console.log(await client.sIsMember('tags', 'node')); // → true
+console.log(await client.sMembers('tags'));           // → ["node", "sqlite", "redis"]
+console.log(await client.sIsMember('tags', 'node'));  // → true
 console.log(await client.sCard('tags'));              // → 3
 
 await client.sRem('tags', 'redis');
@@ -130,15 +130,15 @@ console.log(await client.sCard('tags'));              // → 2
 ### Lists
 
 ```javascript
-await client.lPush('queue', ['c', 'b', 'a']);        // push left: a, b, c
-await client.rPush('queue', ['d', 'e']);              // push right: d, e
+await client.lPush('queue', ['c', 'b', 'a']);      // push left: a, b, c
+await client.rPush('queue', ['d', 'e']);           // push right: d, e
 
-console.log(await client.lLen('queue'));               // → 5
-console.log(await client.lRange('queue', 0, -1));      // → ["a", "b", "c", "d", "e"]
-console.log(await client.lIndex('queue', 0));          // → "a"
+console.log(await client.lLen('queue'));           // → 5
+console.log(await client.lRange('queue', 0, -1));  // → ["a", "b", "c", "d", "e"]
+console.log(await client.lIndex('queue', 0));      // → "a"
 
-console.log(await client.lPop('queue'));               // → "a"
-console.log(await client.rPop('queue'));               // → "e"
+console.log(await client.lPop('queue'));           // → "a"
+console.log(await client.rPop('queue'));           // → "e"
 ```
 
 ### Sorted sets
