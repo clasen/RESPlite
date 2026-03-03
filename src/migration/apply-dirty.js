@@ -52,10 +52,12 @@ export async function runApplyDirty(redisClient, dbPath, runId, options = {}) {
       r = getRun(db, runId);
     }
 
-    const batch = getDirtyBatch(db, runId, 'dirty', batch_keys);
-    if (batch.length === 0) break;
+    const dirtyBatch   = getDirtyBatch(db, runId, 'dirty',   batch_keys);
+    const deletedBatch = getDirtyBatch(db, runId, 'deleted', batch_keys);
+    if (dirtyBatch.length === 0 && deletedBatch.length === 0) break;
 
-    for (const { key: keyBuf } of batch) {
+    // ── Re-import (or remove) keys that changed while bulk was running ──
+    for (const { key: keyBuf } of dirtyBatch) {
       r = getRun(db, runId);
       if (r && r.status === RUN_STATUS.ABORTED) break;
       while (r && r.status === RUN_STATUS.PAUSED) {
@@ -86,6 +88,35 @@ export async function runApplyDirty(redisClient, dbPath, runId, options = {}) {
             markDirtyState(db, runId, keyBuf, 'error');
           }
         }
+      } catch (err) {
+        logError(db, runId, 'dirty_apply', err.message, keyBuf);
+        markDirtyState(db, runId, keyBuf, 'error');
+      }
+    }
+
+    // ── Apply deletions recorded by the tracker (del / expired events) ──
+    // The tracker already determined these keys are gone; delete from destination.
+    // Marked as 'deleted' in the run counter; state changed away from 'deleted'
+    // so the next getDirtyBatch call won't return them again (avoiding infinite loop).
+    for (const { key: keyBuf } of deletedBatch) {
+      r = getRun(db, runId);
+      if (r && r.status === RUN_STATUS.ABORTED) break;
+      while (r && r.status === RUN_STATUS.PAUSED) {
+        await sleep(2000);
+        r = getRun(db, runId);
+      }
+
+      try {
+        keys.delete(keyBuf);
+        // Increment dirty_keys_deleted counter and transition state out of 'deleted'
+        // so this key is not re-processed in the next batch iteration.
+        const now = Date.now();
+        db.prepare(
+          `UPDATE migration_dirty_keys SET state = 'applied', last_seen_at = ? WHERE run_id = ? AND key = ?`
+        ).run(now, runId, keyBuf);
+        db.prepare(
+          `UPDATE migration_runs SET dirty_keys_deleted = dirty_keys_deleted + 1, updated_at = ? WHERE run_id = ?`
+        ).run(now, runId);
       } catch (err) {
         logError(db, runId, 'dirty_apply', err.message, keyBuf);
         markDirtyState(db, runId, keyBuf, 'error');

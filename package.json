@@ -1,6 +1,6 @@
 {
   "name": "resplite",
-  "version": "1.0.4",
+  "version": "1.1.2",
   "description": "A RESP2 server with practical Redis compatibility, backed by SQLite",
   "type": "module",
   "main": "src/index.js",
@@ -10,7 +10,8 @@
   },
   "exports": {
     ".": "./src/index.js",
-    "./embed": "./src/embed.js"
+    "./embed": "./src/embed.js",
+    "./migration": "./src/migration/index.js"
   },
   "scripts": {
     "start": "node src/index.js",

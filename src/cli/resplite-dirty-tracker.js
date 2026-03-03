@@ -4,10 +4,10 @@
  * Usage: resplite-dirty-tracker start|stop [options]
  */
 
-import { createClient } from 'redis';
 import { fileURLToPath } from 'node:url';
 import { openDb } from '../storage/sqlite/db.js';
-import { createRun, getRun, setRunStatus, upsertDirtyKey, logError, RUN_STATUS } from '../migration/registry.js';
+import { getRun, setRunStatus, RUN_STATUS } from '../migration/registry.js';
+import { startDirtyTracker } from '../migration/tracker.js';
 
 function parseArgs(argv = process.argv.slice(2)) {
   const args = { _: [] };
@@ -18,71 +18,39 @@ function parseArgs(argv = process.argv.slice(2)) {
     else if (arg === '--run-id' && argv[i + 1]) args.runId = argv[++i];
     else if (arg === '--channels' && argv[i + 1]) args.channels = argv[++i];
     else if (arg === '--pragma-template' && argv[i + 1]) args.pragmaTemplate = argv[++i];
+    else if (arg === '--config-command' && argv[i + 1]) args.configCommand = argv[++i];
     else if (!arg.startsWith('--')) args._.push(arg);
   }
   return args;
 }
 
-async function checkKeyspaceNotifications(client) {
-  let val = null;
-  try {
-    const config = await client.configGet('notify-keyspace-events');
-    val = config && typeof config === 'object' ? config['notify-keyspace-events'] : null;
-  } catch (_) {}
-  if (!val || val === '') {
-    throw new Error('Redis notify-keyspace-events is not set. Enable it (e.g. CONFIG SET notify-keyspace-events Kgxe) for the dirty-key tracker.');
-  }
-  return val;
-}
-
-async function startTracker(args) {
+async function startTrackerCli(args) {
   const redisUrl = args.from || process.env.RESPLITE_IMPORT_FROM || 'redis://127.0.0.1:6379';
   const dbPath = args.to;
   const runId = args.runId || process.env.RESPLITE_RUN_ID;
   if (!dbPath || !runId) {
-    console.error('Usage: resplite-dirty-tracker start --run-id <id> --to <db-path> [--from <redis-url>] [--channels keyevent]');
+    console.error('Usage: resplite-dirty-tracker start --run-id <id> --to <db-path> [--from <redis-url>] [--config-command <name>]');
     process.exit(1);
   }
 
-  const db = openDb(dbPath, { pragmaTemplate: args.pragmaTemplate || 'default' });
-  createRun(db, runId, redisUrl);
-
-  const mainClient = createClient({ url: redisUrl });
-  mainClient.on('error', (e) => console.error('Redis (main):', e.message));
-  await mainClient.connect();
-  await checkKeyspaceNotifications(mainClient);
-
-  const subClient = mainClient.duplicate();
-  subClient.on('error', (e) => {
-    console.error('Redis (sub):', e.message);
-    logError(db, runId, 'dirty_apply', 'Tracker disconnect: ' + e.message, null);
+  const tracker = await startDirtyTracker({
+    from: redisUrl,
+    to: dbPath,
+    runId,
+    pragmaTemplate: args.pragmaTemplate || 'default',
+    configCommand: args.configCommand || 'CONFIG',
   });
-  await subClient.connect();
 
-  const pattern = '__keyevent@0__:*';
-  console.log('Subscribing to', pattern, '...');
-
-  await subClient.pSubscribe(pattern, (message, channel) => {
-    const event = typeof channel === 'string' ? channel.split(':').pop() : (channel && channel.toString?.())?.split(':').pop() || 'unknown';
-    const key = message;
-    try {
-      upsertDirtyKey(db, runId, key, event);
-    } catch (err) {
-      logError(db, runId, 'dirty_apply', err.message, key);
-    }
-  });
+  console.log('Subscribed to __keyevent@0__:* — dirty tracker running. Ctrl+C to stop.');
 
   const shutdown = async () => {
     console.log('Stopping dirty tracker...');
-    await subClient.pUnsubscribe(pattern);
-    await subClient.quit();
-    await mainClient.quit();
+    await tracker.stop();
     process.exit(0);
   };
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
-  console.log('Dirty tracker running. Ctrl+C to stop.');
 }
 
 async function stopTracker(args) {
@@ -105,7 +73,7 @@ async function stopTracker(args) {
 async function main() {
   const args = parseArgs();
   const sub = args._[0];
-  if (sub === 'start') await startTracker(args);
+  if (sub === 'start') await startTrackerCli(args);
   else if (sub === 'stop') await stopTracker(args);
   else {
     console.error('Usage: resplite-dirty-tracker <start|stop> --run-id <id> --to <db-path> [--from <redis-url>]');
@@ -121,4 +89,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, startTracker, stopTracker };
+export { parseArgs, stopTracker };
