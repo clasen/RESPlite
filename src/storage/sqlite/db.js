@@ -5,6 +5,7 @@
 import Database from 'better-sqlite3';
 import { applyPragmas } from './pragmas.js';
 import { applySchema } from './schema.js';
+import { applyMigrationSchema } from './migration-schema.js';
 
 /**
  * @param {string} path - Database file path
@@ -16,5 +17,6 @@ export function openDb(path, options = {}) {
   const db = new Database(path, dbOptions);
   applyPragmas(db, pragmaTemplate);
   applySchema(db);
+  applyMigrationSchema(db);
   return db;
 }

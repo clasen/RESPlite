@@ -6,35 +6,77 @@ import { RESPReader } from '../resp/parser.js';
 import { dispatch } from '../commands/registry.js';
 import { encode, encodeSimpleString, encodeError } from '../resp/encoder.js';
 
+let nextConnectionId = 0;
+
 /**
  * @param {import('net').Socket} socket
  * @param {object} engine
  */
 export function handleConnection(socket, engine) {
   const reader = new RESPReader();
+  const connectionId = ++nextConnectionId;
+  const context = {
+    connectionId,
+    writeResponse(buf) {
+      if (socket.writable) socket.write(buf);
+    },
+  };
+
+  function writeResult(out) {
+    if (out.quit) {
+      socket.write(encodeSimpleString('OK'));
+      socket.end();
+      return true;
+    }
+    let buf;
+    if (out.error) {
+      buf = encodeError(out.error);
+    } else if (out.result && typeof out.result === 'object' && out.result.simple !== undefined) {
+      buf = encodeSimpleString(out.result.simple);
+    } else if (out.result && typeof out.result === 'object' && out.result.error !== undefined) {
+      buf = encodeError(out.result.error);
+    } else {
+      buf = encode(out.result);
+    }
+    socket.write(buf);
+    return false;
+  }
 
   socket.on('data', (chunk) => {
     reader.feed(chunk);
     const commands = reader.parseCommands();
     for (const argv of commands) {
-      const out = dispatch(engine, argv);
+      const out = dispatch(engine, argv, context);
       if (out.quit) {
-        socket.write(encodeSimpleString('OK'));
-        socket.end();
+        writeResult(out);
         return;
       }
-      let buf;
-      if (out.error) {
-        buf = encodeError(out.error);
-      } else if (out.result && typeof out.result === 'object' && out.result.simple !== undefined) {
-        buf = encodeSimpleString(out.result.simple);
-      } else if (out.result && typeof out.result === 'object' && out.result.error !== undefined) {
-        buf = encodeError(out.result.error);
-      } else {
-        buf = encode(out.result);
+      if (out.block) {
+        const { keys, kind, timeoutSeconds } = out.block;
+        const blockingManager = engine._blockingManager;
+        if (!blockingManager) {
+          socket.write(encodeError('ERR blocking not available'));
+          continue;
+        }
+        const resolve = (value) => {
+          const buf = value === null ? encode(null) : encode(value);
+          context.writeResponse(buf);
+          socket.resume();
+        };
+        const err = blockingManager.registerWaiter(keys, kind, timeoutSeconds, resolve, connectionId);
+        if (err.error) {
+          socket.write(encodeError(err.error));
+          continue;
+        }
+        socket.pause();
+        return;
       }
-      socket.write(buf);
+      if (writeResult(out)) return;
     }
+  });
+
+  socket.on('close', () => {
+    if (engine._blockingManager) engine._blockingManager.cancel(connectionId);
   });
 
   socket.on('error', () => {});

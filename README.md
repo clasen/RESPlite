@@ -141,6 +141,23 @@ console.log(await client.lPop('queue'));           // → "a"
 console.log(await client.rPop('queue'));           // → "e"
 ```
 
+### Blocking list commands (BLPOP / BRPOP)
+
+`BLPOP` and `BRPOP` block until an element is available or a timeout (seconds) is reached. Use them for simple queues or coordination between producers and consumers.
+
+```javascript
+// Consumer: block up to 10 seconds for an element from "tasks" or "fallback"
+const result = await client.blPop(['tasks', 'fallback'], 10);
+// result is { key: 'tasks', element: 'item1' } or null on timeout
+
+// Producer (e.g. another client or process)
+await client.rPush('tasks', 'item1');
+```
+
+- **Timeout**: `0` = block indefinitely; `> 0` = block up to that many seconds.
+- **Return**: `{ key, element }` on success, or `null` on timeout.
+- **Multi-key**: Keys are checked in order; the first key that has an element wins. One push wakes at most one blocked client (FIFO per key).
+
 ### Sorted sets
 
 ```javascript
@@ -239,7 +256,7 @@ await srv2.close();
 | **TTL** | EXPIRE, PEXPIRE, TTL, PTTL, PERSIST |
 | **Hashes** | HSET, HGET, HMGET, HGETALL, HDEL, HEXISTS, HINCRBY |
 | **Sets** | SADD, SREM, SMEMBERS, SISMEMBER, SCARD |
-| **Lists** | LPUSH, RPUSH, LLEN, LRANGE, LINDEX, LPOP, RPOP |
+| **Lists** | LPUSH, RPUSH, LLEN, LRANGE, LINDEX, LPOP, RPOP, BLPOP, BRPOP |
 | **Sorted sets** | ZADD, ZREM, ZCARD, ZSCORE, ZRANGE, ZRANGEBYSCORE |
 | **Search (FT.\*)** | FT.CREATE, FT.INFO, FT.ADD, FT.DEL, FT.SEARCH, FT.SUGADD, FT.SUGGET, FT.SUGDEL |
 | **Introspection** | TYPE, SCAN |
@@ -252,14 +269,18 @@ await srv2.close();
 - Streams (XADD, XRANGE, etc.)
 - Lua (EVAL, EVALSHA)
 - Transactions (MULTI, EXEC, WATCH)
-- Blocking commands (BLPOP, etc.)
+- BRPOPLPUSH, BLMOVE (blocking list moves)
 - SELECT (multiple logical DBs)
 
 Unsupported commands return: `ERR command not supported yet`.
 
 ## Migration from Redis
 
-An external CLI imports data from a running Redis instance into a RESPlite SQLite DB. Supports strings, hashes, sets, lists, zsets, and TTL. Requires a local or remote Redis and the `redis` npm package (dev dependency).
+Migration supports two modes:
+
+### Simple one-shot import (legacy)
+
+For small datasets or when downtime is acceptable:
 
 ```bash
 # Default: redis://127.0.0.1:6379 → ./data.db
@@ -275,7 +296,47 @@ npm run import-from-redis -- --db ./migrated.db --host 127.0.0.1 --port 6379
 npm run import-from-redis -- --db ./migrated.db --pragma-template performance
 ```
 
-Then start RESPLite with the migrated DB: `RESPLITE_DB=./migrated.db npm start`.
+### Minimal-downtime migration (SPEC_F)
+
+For large datasets (~30 GB), use the Dirty Key Registry flow so the bulk of the migration runs online and only a short cutover is needed:
+
+1. **Preflight** – Check Redis, key count, type distribution, and that keyspace notifications are enabled:
+   ```bash
+   npx resplite-import preflight --from redis://10.0.0.10:6379 --to ./resplite.db
+   ```
+
+2. **Start dirty-key tracker** – Captures keys modified during bulk (requires `notify-keyspace-events` in Redis):
+   ```bash
+   npx resplite-dirty-tracker start --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db
+   ```
+
+3. **Bulk import** – SCAN and copy all keys; progress is checkpointed and resumable:
+   ```bash
+   npx resplite-import bulk --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db \
+     --scan-count 1000 --max-rps 2000 --batch-keys 200 --batch-bytes 64MB --resume
+   ```
+
+4. **Monitor** – Check run and dirty-key counts:
+   ```bash
+   npx resplite-import status --run-id run_001 --to ./resplite.db
+   ```
+
+5. **Cutover** – Freeze app writes to Redis, then apply remaining dirty keys:
+   ```bash
+   npx resplite-import apply-dirty --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db
+   ```
+
+6. **Stop tracker and switch** – Stop the tracker and point clients to RespLite:
+   ```bash
+   npx resplite-dirty-tracker stop --run-id run_001 --to ./resplite.db
+   ```
+
+7. **Verify** – Optional sampling check between Redis and destination:
+   ```bash
+   npx resplite-import verify --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db --sample 0.5%
+   ```
+
+Then start RespLite with the migrated DB: `RESPLITE_DB=./resplite.db npm start`.
 
 ## Benchmark (Redis vs RESPLite)
 
@@ -303,7 +364,9 @@ npm run benchmark -- --iterations 10000 --redis-port 6379 --resplite-port 6380
 | `npm run test:contract` | Contract tests (redis client) |
 | `npm run test:stress` | Stress tests |
 | `npm run benchmark` | Comparative benchmark Redis vs RESPLite |
-| `npm run import-from-redis` | Import from Redis into a SQLite DB |
+| `npm run import-from-redis` | One-shot import from Redis into a SQLite DB |
+| `npx resplite-import` (preflight, bulk, status, apply-dirty, verify) | Migration CLI (SPEC_F minimal-downtime flow) |
+| `npx resplite-dirty-tracker <start\|stop>` | Dirty-key tracker for migration cutover |
 
 ## Specification
 

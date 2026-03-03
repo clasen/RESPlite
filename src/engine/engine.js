@@ -9,6 +9,7 @@ import { createHashesStorage } from '../storage/sqlite/hashes.js';
 import { createSetsStorage } from '../storage/sqlite/sets.js';
 import { createListsStorage } from '../storage/sqlite/lists.js';
 import { createZsetsStorage } from '../storage/sqlite/zsets.js';
+import { createBlockingManager } from '../blocking/manager.js';
 import { expectString, expectHash, expectSet, expectList, expectZset, typeName } from './validate.js';
 import { asKey, asValue } from '../util/buffers.js';
 
@@ -45,7 +46,7 @@ export function createEngine(opts = {}) {
     return meta;
   }
 
-  return {
+  const engine = {
     get(key) {
       const k = asKey(key);
       const meta = getKeyMeta(key);
@@ -262,14 +263,18 @@ export function createEngine(opts = {}) {
       const k = asKey(key);
       getKeyMeta(key);
       const buf = values.map((v) => (Buffer.isBuffer(v) ? v : asValue(v)));
-      return lists.lpush(k, buf);
+      const n = lists.lpush(k, buf);
+      if (this._blockingManager) this._blockingManager.wakeup(k);
+      return n;
     },
 
     rpush(key, ...values) {
       const k = asKey(key);
       getKeyMeta(key);
       const buf = values.map((v) => (Buffer.isBuffer(v) ? v : asValue(v)));
-      return lists.rpush(k, buf);
+      const n = lists.rpush(k, buf);
+      if (this._blockingManager) this._blockingManager.wakeup(k);
+      return n;
     },
 
     llen(key) {
@@ -398,7 +403,10 @@ export function createEngine(opts = {}) {
     _lists: lists,
     _zsets: zsets,
     _clock: clock,
+    _blockingManager: null,
   };
+  engine._blockingManager = createBlockingManager(engine, { clock });
+  return engine;
 }
 
 export { KEY_TYPES };

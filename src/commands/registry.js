@@ -41,6 +41,8 @@ import * as lrange from './lrange.js';
 import * as lindex from './lindex.js';
 import * as lpop from './lpop.js';
 import * as rpop from './rpop.js';
+import * as blpop from './blpop.js';
+import * as brpop from './brpop.js';
 import * as scan from './scan.js';
 import * as zadd from './zadd.js';
 import * as zrem from './zrem.js';
@@ -97,8 +99,10 @@ const HANDLERS = new Map([
   ['LLEN', (e, a) => llen.handleLlen(e, a)],
   ['LRANGE', (e, a) => lrange.handleLrange(e, a)],
   ['LINDEX', (e, a) => lindex.handleLindex(e, a)],
-  ['LPOP', (e, a) => lpop.handleLpop(e, a)],
-  ['RPOP', (e, a) => rpop.handleRpop(e, a)],
+  ['LPOP', (e, a, ctx) => lpop.handleLpop(e, a)],
+  ['RPOP', (e, a, ctx) => rpop.handleRpop(e, a)],
+  ['BLPOP', (e, a, ctx) => blpop.handleBlpop(e, a, ctx)],
+  ['BRPOP', (e, a, ctx) => brpop.handleBrpop(e, a, ctx)],
   ['SCAN', (e, a) => scan.handleScan(e, a)],
   ['ZADD', (e, a) => zadd.handleZadd(e, a)],
   ['ZREM', (e, a) => zrem.handleZrem(e, a)],
@@ -123,9 +127,10 @@ const HANDLERS = new Map([
  * Dispatch command. Full argv: [commandNameBuf, ...argBuffers].
  * @param {object} engine
  * @param {Buffer[]} argv - first element is command name, rest are arguments
- * @returns {{ result: unknown } | { error: string } | { quit: true }}
+ * @param {object} [context] - optional connection context (connectionId, writeResponse) for blocking commands
+ * @returns {{ result: unknown } | { error: string } | { quit: true } | { block: object }}
  */
-export function dispatch(engine, argv) {
+export function dispatch(engine, argv, context) {
   if (!argv || argv.length === 0) {
     return { error: 'ERR wrong number of arguments' };
   }
@@ -136,9 +141,10 @@ export function dispatch(engine, argv) {
     return { error: unsupported() };
   }
   try {
-    const result = handler(engine, args);
+    const result = handler(engine, args, context);
     if (result && result.quit) return result;
     if (result && result.error) return result;
+    if (result && result.block) return result;
     return { result };
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
