@@ -34,4 +34,25 @@ describe('Engine hashes', () => {
     engine.hset('cnt', 'n', '10');
     assert.equal(engine.hincrby('cnt', 'n', 5), 15);
   });
+
+  it('HLEN returns number of fields', () => {
+    engine.hset('hlen:u', 'f1', 'v1', 'f2', 'v2', 'f3', 'v3');
+    assert.equal(engine.hlen('hlen:u'), 3);
+  });
+
+  it('HLEN on non-existent key returns 0', () => {
+    assert.equal(engine.hlen('hlen:missing'), 0);
+  });
+
+  it('HLEN decreases when fields are deleted', () => {
+    engine.hset('hlen:dec', 'a', '1', 'b', '2');
+    assert.equal(engine.hlen('hlen:dec'), 2);
+    engine.hdel('hlen:dec', ['a']);
+    assert.equal(engine.hlen('hlen:dec'), 1);
+  });
+
+  it('HLEN throws WRONGTYPE on non-hash key', () => {
+    engine.set('hlen:str', 'value');
+    assert.throws(() => engine.hlen('hlen:str'), /WRONGTYPE/);
+  });
 });

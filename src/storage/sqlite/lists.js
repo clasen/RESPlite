@@ -37,6 +37,10 @@ export function createListsStorage(db, keys) {
   const deleteRangeStmt = db.prepare(
     'DELETE FROM redis_list_items WHERE key = ? AND seq BETWEEN ? AND ?'
   );
+  const selectAllWithSeqStmt = db.prepare(
+    'SELECT seq, value FROM redis_list_items WHERE key = ? ORDER BY seq ASC'
+  );
+  const deleteAllItemsStmt = db.prepare('DELETE FROM redis_list_items WHERE key = ?');
 
   function getMeta(key) {
     return getMetaStmt.get(key) || null;
@@ -227,6 +231,52 @@ export function createListsStorage(db, keys) {
           keys.bumpVersion(key);
         }
         return values;
+      });
+    },
+
+    lrem(key, count, element) {
+      return runInTransaction(db, () => {
+        const meta = getMeta(key);
+        if (!meta) return 0;
+
+        const allItems = selectAllWithSeqStmt.all(key);
+        const matches = allItems.filter((item) => {
+          const v = item.value;
+          return Buffer.isBuffer(v) && Buffer.isBuffer(element)
+            ? v.equals(element)
+            : String(v) === String(element);
+        });
+
+        if (matches.length === 0) return 0;
+
+        let toDelete;
+        if (count === 0) {
+          toDelete = matches;
+        } else if (count > 0) {
+          toDelete = matches.slice(0, count);
+        } else {
+          toDelete = matches.slice(count);
+        }
+
+        for (const item of toDelete) {
+          deleteItemStmt.run(key, item.seq);
+        }
+
+        const remaining = selectAllWithSeqStmt.all(key);
+        if (remaining.length === 0) {
+          deleteMetaStmt.run(key);
+          keys.delete(key);
+        } else {
+          deleteAllItemsStmt.run(key);
+          const baseSeq = meta.headSeq;
+          for (let i = 0; i < remaining.length; i++) {
+            insertItemStmt.run(key, baseSeq + i, remaining[i].value);
+          }
+          updateMetaStmt.run(baseSeq, baseSeq + remaining.length - 1, key);
+          keys.bumpVersion(key);
+        }
+
+        return toDelete.length;
       });
     },
   };

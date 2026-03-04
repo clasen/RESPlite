@@ -24,6 +24,25 @@
     "benchmark": "node scripts/benchmark-redis-vs-resplite.js",
     "test:all": "node --test 'test/**/*.test.js'"
   },
+  "keywords": [
+    "redis",
+    "sqlite",
+    "resp",
+    "emulator",
+    "sdd",
+    "persist",
+    "cache",
+    "key-value",
+    "store",
+    "embedded",
+    "server",
+    "valkey",
+    "compatible",
+    "dragonfly",
+    "keydb",
+    "garnet",
+    "clasen"
+  ],
   "dependencies": {
     "better-sqlite3": "^11.6.0"
   },

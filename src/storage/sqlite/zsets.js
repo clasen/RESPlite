@@ -63,11 +63,13 @@ export function createZsetsStorage(db, keys) {
         } else {
           keys.set(key, KEY_TYPES.ZSET, { updatedAt: now });
         }
-        const before = countStmt.get(key)?.n ?? 0;
+        let newCount = 0;
         for (const { score, member } of pairs) {
+          const existed = scoreStmt.get(key, member) != null;
           upsertStmt.run(key, member, score);
+          if (!existed) newCount++;
         }
-        return (countStmt.get(key)?.n ?? 0) - before;
+        return newCount;
       });
     },
 
@@ -112,6 +114,17 @@ export function createZsetsStorage(db, keys) {
      * @returns {Buffer[] | Array<Buffer|string>} members or [member, score, ...]
      */
     rangeByRank(key, start, stop, options = {}) {
+      if (start >= 0 && stop >= 0) {
+        if (start > stop) return [];
+        const rows = rangeByRankStmt.all(key, stop - start + 1, start);
+        if (rows.length === 0) return [];
+        if (!options.withScores) return rows.map((r) => r.member);
+        const out = [];
+        for (const r of rows) {
+          out.push(r.member, formatScore(r.score));
+        }
+        return out;
+      }
       const len = this.count(key);
       if (len === 0) return [];
       let s = start < 0 ? Math.max(0, len + start) : start;

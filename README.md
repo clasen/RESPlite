@@ -1,15 +1,63 @@
 # RESPLite
 
-A RESP2 server with practical Redis compatibility, backed by SQLite for persistent single-node workloads.
+A RESP server backed by SQLite. Compatible with `redis` clients and `redis-cli`, persistent by default, zero external daemons, and minimal memory footprint.
 
 ## Overview
 
-RESPLite is not a full Redis clone. It is a RESP server with Redis-like semantics for a carefully selected subset of commands that map naturally to SQLite. Ideal for small to medium applications, persistent caches, local development, and low-ops deployments.
+RESPLite speaks **RESP** (the Redis Serialization Protocol), so your existing `redis` npm client and `redis-cli` work without changes. The storage layer is **SQLite**: WAL mode, FTS5 for full-text search, and a single `.db` file that survives restarts without snapshots or AOF.
 
-- **Zero external services** — just Node.js and a SQLite file.
+It is not a Redis clone. It covers a practical subset of commands that map naturally to SQLite, suited for single-node workloads where Redis' in-memory latency is not a hard requirement.
+
+- **Zero external services** — just Node.js and a `.db` file.
 - **Drop-in compatible** — works with the official `redis` npm client and `redis-cli`.
-- **Persistent by default** — data survives restarts without snapshots or AOF.
-- **Embeddable** — start the server and connect from the same script (see examples below).
+- **Persistent by default** — no snapshots, no AOF, no config.
+- **Embeddable** — start the server and connect from the same script.
+- **Full-text search** — FT.\* commands via SQLite FTS5.
+- **Simple queues** — lists with BLPOP/BRPOP.
+
+### When RESPLite beats Redis in Docker
+
+Building this project surfaced a clear finding: **Redis running inside Docker** on the same host often has **worse latency** than **RESPLite running locally**. Docker's virtual network adds overhead that disappears when the server runs in the same process/host. For single-node workloads this makes RESPLite the faster, simpler option.
+
+The strongest use case is **migrating a non-replicated Redis instance that has grown large** (tens of GB). You don't need to manage replicas, AOF, or RDB. Once migrated, you get a single SQLite file and latency that is good enough for most workloads. The built-in migration tooling (see [Migration from Redis](#migration-from-redis)) handles datasets of that size with minimal downtime.
+
+## Benchmark (Redis vs RESPLite)
+
+A typical comparison is **Redis (e.g. in Docker)** on one side and **RESPLite locally** on the other. In that setup, RESPLite often shows **better latency** because it avoids Docker networking and runs in the same process/host. The benchmark below uses RESPLite with the **default** PRAGMA template only.
+
+**Example results (Redis vs RESPLite, default pragma, 10k iterations):**
+
+| Suite           | Redis (Docker) | RESPLite (default) |
+|-----------------|----------------|--------------------|
+| PING            | 9.17K/s        | 27.59K/s           |
+| SET+GET         | 4.65K/s        | 9.53K/s            |
+| MSET+MGET(10)   | 4.47K/s        | 5.35K/s            |
+| INCR            | 9.84K/s        | 15.56K/s           |
+| HSET+HGET       | 4.63K/s        | 10.95K/s           |
+| HGETALL(50)     | 9.19K/s        | 8.19K/s            |
+| SADD+SMEMBERS   | 9.16K/s        | 15.54K/s           |
+| LPUSH+LRANGE    | 7.97K/s        | 10.24K/s           |
+| ZADD+ZRANGE     | 8.08K/s        | 2.89K/s            |
+| SET+DEL         | 4.60K/s        | 6.62K/s            |
+| FT.SEARCH       | 8.20K/s        | 7.20K/s            |
+
+*Run `npm run benchmark -- --template default` to reproduce. Numbers depend on host and whether Redis is native or in Docker.*
+
+How to run:
+
+```bash
+# Terminal 1: Redis on 6379 (e.g. docker run -p 6379:6379 redis). Terminal 2: RESPLite on 6380
+RESPLITE_PORT=6380 npm start
+
+# Terminal 3: run benchmark (Redis=6379, RESPLite=6380 by default)
+npm run benchmark
+
+# Only RESPLite with default pragma
+npm run benchmark -- --template default
+
+# Custom iterations and ports
+npm run benchmark -- --iterations 10000 --redis-port 6379 --resplite-port 6380
+```
 
 ## Install
 
@@ -265,6 +313,8 @@ await srv2.close();
 
 ## Compatibility matrix
 
+RESPLite implements **47 core Redis commands** (~19% of the ~246 commands in Redis 7). The uncovered 81% is mostly entire subsystems that are out of scope by design: pub/sub (~10 commands), Streams (~20), cluster/replication (~30), Lua scripting (~5), server admin (~40), and extended variants of data-structure commands. For typical single-node application workloads — strings, hashes, sets, lists, sorted sets, key TTLs — coverage is close to the commands developers reach for daily.
+
 ### Supported (v1)
 
 | Category | Commands |
@@ -293,6 +343,8 @@ await srv2.close();
 Unsupported commands return: `ERR command not supported yet`.
 
 ## Migration from Redis
+
+RESPLite is a good fit for migrating **non-replicated Redis** instances that have **grown large** (e.g. tens of GB) and where RESPLite’s latency is acceptable. The SPEC_F flow (dirty-key tracker, bulk import, cutover) is designed for that scenario with minimal downtime.
 
 Migration supports two modes:
 
@@ -492,21 +544,6 @@ import {
   runPreflight, runBulkImport, runApplyDirty, runVerify,
   getRun, getDirtyCounts, createRun, setRunStatus, logError,
 } from 'resplite/migration';
-```
-
-## Benchmark (Redis vs RESPLite)
-
-Compare throughput of local Redis and RESPLite with the same workload (PING, SET/GET, hashes, sets, lists, zsets, etc.):
-
-```bash
-# Terminal 1: Redis on 6379 (default). Terminal 2: RESPLite on 6380
-RESPLITE_PORT=6380 npm start
-
-# Terminal 3: run benchmark (Redis=6379, RESPLite=6380 by default)
-npm run benchmark
-
-# Optional: custom iterations and ports
-npm run benchmark -- --iterations 10000 --redis-port 6379 --resplite-port 6380
 ```
 
 ## Scripts

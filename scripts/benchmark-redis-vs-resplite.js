@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * Comparative benchmark: Redis (local) vs RESPlite (all PRAGMA templates).
+ * Comparative benchmark: Redis (local) vs RESPlite (all or one PRAGMA template).
  *
  * Prerequisites:
  *   - Redis running on port 6379 (default)
  *
- * The script spawns one RESPlite process per PRAGMA template (default, performance, safety, minimal)
- * on consecutive ports (6380, 6381, 6382, 6383 by default) and runs the same workload against each.
+ * By default the script spawns one RESPlite process per PRAGMA template (default, performance, safety, minimal)
+ * on consecutive ports. Use --template <name> to run only one template (e.g. default).
  *
  * Usage:
- *   node scripts/benchmark-redis-vs-resplite.js [--iterations N] [--redis-port P] [--resplite-port P]
+ *   node scripts/benchmark-redis-vs-resplite.js [--iterations N] [--redis-port P] [--resplite-port P] [--template NAME]
  */
 
 import { createClient } from 'redis';
@@ -26,7 +26,10 @@ const DEFAULTS = {
   iterations: 10000,
   redisPort: 6379,
   resplitePort: 6380,
+  template: null, // null = all templates (except none); or 'default' | 'performance' | 'safety' | 'minimal'
 };
+
+const VALID_TEMPLATES = ['default', 'performance', 'safety', 'minimal'];
 
 function parseArgs() {
   const out = { ...DEFAULTS };
@@ -38,6 +41,13 @@ function parseArgs() {
       out.redisPort = parseInt(args[++i], 10);
     } else if (args[i] === '--resplite-port' && args[i + 1]) {
       out.resplitePort = parseInt(args[++i], 10);
+    } else if (args[i] === '--template' && args[i + 1]) {
+      const name = args[++i];
+      if (!VALID_TEMPLATES.includes(name)) {
+        console.error(`Invalid --template "${name}". Must be one of: ${VALID_TEMPLATES.join(', ')}`);
+        process.exit(1);
+      }
+      out.template = name;
     }
   }
   return out;
@@ -204,6 +214,13 @@ async function benchHgetall(client, n) {
   for (let i = 0; i < n; i++) await client.hGetAll(key);
 }
 
+async function benchHlen(client, n) {
+  const key = 'bm:hash:hlen';
+  await client.del(key);
+  await client.hSet(key, Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`f${i}`, `v${i}`])));
+  for (let i = 0; i < n; i++) await client.hLen(key);
+}
+
 async function benchSaddSmembers(client, n) {
   const key = 'bm:set';
   for (let i = 0; i < n; i++) {
@@ -218,6 +235,18 @@ async function benchLpushLrange(client, n) {
   for (let i = 0; i < n; i++) {
     await client.lPush(key, `item-${i}`);
     if (i % 10 === 0) await client.lRange(key, 0, 99);
+  }
+}
+
+async function benchLrem(client, n) {
+  const key = 'bm:list:lrem';
+  await client.del(key);
+  // Pre-populate with a mix of values so LREM always finds something to do.
+  // Each iteration pushes one 'target' element and removes it — net-zero list size.
+  await client.rPush(key, Array.from({ length: 20 }, (_, i) => `item-${i}`));
+  for (let i = 0; i < n; i++) {
+    await client.rPush(key, 'target');
+    await client.lRem(key, 1, 'target');
   }
 }
 
@@ -277,8 +306,10 @@ const SUITES = [
   { name: 'INCR', fn: benchIncr, iterScale: 1 },
   { name: 'HSET+HGET', fn: benchHsetHget, iterScale: 1 },
   { name: 'HGETALL(50)', fn: benchHgetall, iterScale: 1 },
+  { name: 'HLEN(50)', fn: benchHlen, iterScale: 1 },
   { name: 'SADD+SMEMBERS', fn: benchSaddSmembers, iterScale: 1 },
   { name: 'LPUSH+LRANGE', fn: benchLpushLrange, iterScale: 1 },
+  { name: 'LREM', fn: benchLrem, iterScale: 1 },
   { name: 'ZADD+ZRANGE', fn: benchZaddZrange, iterScale: 1 },
   { name: 'SET+DEL', fn: benchDel, iterScale: 1 },
   { name: 'FT.SEARCH', fn: benchFtSearch, iterScale: 1 },
@@ -304,15 +335,17 @@ async function runSuite(redis, respliteClients, suite, iterations) {
 }
 
 async function main() {
-  const { iterations, redisPort, resplitePort } = parseArgs();
-  const templateNames = getPragmaTemplateNames().filter((t) => t !== 'none');
+  const { iterations, redisPort, resplitePort, template } = parseArgs();
+  const templateNames = template
+    ? [template]
+    : getPragmaTemplateNames().filter((t) => t !== 'none');
 
   const benchTmpDir = path.join(PROJECT_ROOT, 'tmp', 'bench');
   fs.mkdirSync(benchTmpDir, { recursive: true });
 
-  console.log('Benchmark: Redis vs RESPlite (all PRAGMA templates)');
+  console.log(template ? `Benchmark: Redis vs RESPlite (template: ${template})` : 'Benchmark: Redis vs RESPlite (all PRAGMA templates)');
   console.log(`  Redis:    127.0.0.1:${redisPort}`);
-  console.log(`  RESPlite: one process per template on ports ${resplitePort}..${resplitePort + templateNames.length - 1}`);
+  console.log(`  RESPlite: ${templateNames.length} process(es) on port(s) ${resplitePort}${templateNames.length > 1 ? `..${resplitePort + templateNames.length - 1}` : ''}`);
   console.log(`  Templates: ${templateNames.join(', ')}`);
   console.log(`  Iterations per suite: ${iterations}`);
   console.log('');

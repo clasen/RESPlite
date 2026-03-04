@@ -209,6 +209,14 @@ export function createEngine(opts = {}) {
       return hashes.delete(k, fields.map((f) => asKey(f)));
     },
 
+    hlen(key) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return 0;
+      expectHash(meta);
+      return hashes.count(k);
+    },
+
     hexists(key, field) {
       const v = this.hget(key, field);
       return v != null ? 1 : 0;
@@ -320,6 +328,17 @@ export function createEngine(opts = {}) {
       if (!meta) return count != null && count > 0 ? [] : null;
       expectList(meta);
       return lists.rpop(k, count);
+    },
+
+    lrem(key, count, element) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return 0;
+      expectList(meta);
+      const c = parseInt(Buffer.isBuffer(count) ? count.toString() : String(count), 10);
+      if (Number.isNaN(c)) throw new Error('ERR value is not an integer or out of range');
+      const elem = Buffer.isBuffer(element) ? element : asValue(element);
+      return lists.lrem(k, c, elem);
     },
 
     zadd(key, scoreMemberPairs) {

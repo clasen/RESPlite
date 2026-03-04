@@ -27,6 +27,7 @@ import * as hget from './hget.js';
 import * as hmget from './hmget.js';
 import * as hgetall from './hgetall.js';
 import * as hdel from './hdel.js';
+import * as hlen from './hlen.js';
 import * as hexists from './hexists.js';
 import * as hincrby from './hincrby.js';
 import * as sadd from './sadd.js';
@@ -41,6 +42,7 @@ import * as lrange from './lrange.js';
 import * as lindex from './lindex.js';
 import * as lpop from './lpop.js';
 import * as rpop from './rpop.js';
+import * as lrem from './lrem.js';
 import * as blpop from './blpop.js';
 import * as brpop from './brpop.js';
 import * as scan from './scan.js';
@@ -87,6 +89,7 @@ const HANDLERS = new Map([
   ['HMGET', (e, a) => hmget.handleHmget(e, a)],
   ['HGETALL', (e, a) => hgetall.handleHgetall(e, a)],
   ['HDEL', (e, a) => hdel.handleHdel(e, a)],
+  ['HLEN', (e, a) => hlen.handleHlen(e, a)],
   ['HEXISTS', (e, a) => hexists.handleHexists(e, a)],
   ['HINCRBY', (e, a) => hincrby.handleHincrby(e, a)],
   ['SADD', (e, a) => sadd.handleSadd(e, a)],
@@ -101,6 +104,7 @@ const HANDLERS = new Map([
   ['LINDEX', (e, a) => lindex.handleLindex(e, a)],
   ['LPOP', (e, a, ctx) => lpop.handleLpop(e, a)],
   ['RPOP', (e, a, ctx) => rpop.handleRpop(e, a)],
+  ['LREM', (e, a) => lrem.handleLrem(e, a)],
   ['BLPOP', (e, a, ctx) => blpop.handleBlpop(e, a, ctx)],
   ['BRPOP', (e, a, ctx) => brpop.handleBrpop(e, a, ctx)],
   ['SCAN', (e, a) => scan.handleScan(e, a)],

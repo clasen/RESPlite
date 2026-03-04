@@ -129,4 +129,56 @@ describe('Lists integration', () => {
     assert.equal(parsed[1], 0xff);
     assert.equal(parsed[2], 0x80);
   });
+
+  it('LREM count=0 removes all occurrences', async () => {
+    await sendCommand(port, argv('RPUSH', 'lrem:1', 'a', 'b', 'a', 'c', 'a'));
+    const removed = tryParseValue(await sendCommand(port, argv('LREM', 'lrem:1', '0', 'a')), 0).value;
+    assert.equal(removed, 3);
+    const remaining = tryParseValue(await sendCommand(port, argv('LRANGE', 'lrem:1', '0', '-1')), 0).value;
+    assert.equal(remaining.length, 2);
+    assert.equal(remaining[0].toString('utf8'), 'b');
+    assert.equal(remaining[1].toString('utf8'), 'c');
+  });
+
+  it('LREM count>0 removes from head', async () => {
+    await sendCommand(port, argv('RPUSH', 'lrem:2', 'a', 'b', 'a', 'c', 'a'));
+    const removed = tryParseValue(await sendCommand(port, argv('LREM', 'lrem:2', '2', 'a')), 0).value;
+    assert.equal(removed, 2);
+    const remaining = tryParseValue(await sendCommand(port, argv('LRANGE', 'lrem:2', '0', '-1')), 0).value;
+    assert.equal(remaining.length, 3);
+    assert.equal(remaining[0].toString('utf8'), 'b');
+    assert.equal(remaining[1].toString('utf8'), 'c');
+    assert.equal(remaining[2].toString('utf8'), 'a');
+  });
+
+  it('LREM count<0 removes from tail', async () => {
+    await sendCommand(port, argv('RPUSH', 'lrem:3', 'a', 'b', 'a', 'c', 'a'));
+    const removed = tryParseValue(await sendCommand(port, argv('LREM', 'lrem:3', '-2', 'a')), 0).value;
+    assert.equal(removed, 2);
+    const remaining = tryParseValue(await sendCommand(port, argv('LRANGE', 'lrem:3', '0', '-1')), 0).value;
+    assert.equal(remaining.length, 3);
+    assert.equal(remaining[0].toString('utf8'), 'a');
+    assert.equal(remaining[1].toString('utf8'), 'b');
+    assert.equal(remaining[2].toString('utf8'), 'c');
+  });
+
+  it('LREM on non-existent key returns 0', async () => {
+    const reply = tryParseValue(await sendCommand(port, argv('LREM', 'lrem:none', '1', 'x')), 0).value;
+    assert.equal(reply, 0);
+  });
+
+  it('LREM when no matches returns 0', async () => {
+    await sendCommand(port, argv('RPUSH', 'lrem:4', 'a', 'b', 'c'));
+    const reply = tryParseValue(await sendCommand(port, argv('LREM', 'lrem:4', '1', 'z')), 0).value;
+    assert.equal(reply, 0);
+    const len = tryParseValue(await sendCommand(port, argv('LLEN', 'lrem:4')), 0).value;
+    assert.equal(len, 3);
+  });
+
+  it('LREM removes all elements, key disappears', async () => {
+    await sendCommand(port, argv('RPUSH', 'lrem:5', 'x', 'x', 'x'));
+    await sendCommand(port, argv('LREM', 'lrem:5', '0', 'x'));
+    const lenReply = tryParseValue(await sendCommand(port, argv('LLEN', 'lrem:5')), 0).value;
+    assert.equal(lenReply, 0);
+  });
 });
