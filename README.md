@@ -29,17 +29,19 @@ A typical comparison is **Redis (e.g. in Docker)** on one side and **RESPLite lo
 
 | Suite           | Redis (Docker) | RESPLite (default) |
 |-----------------|----------------|--------------------|
-| PING            | 9.17K/s        | 27.59K/s           |
-| SET+GET         | 4.65K/s        | 9.53K/s            |
-| MSET+MGET(10)   | 4.47K/s        | 5.35K/s            |
-| INCR            | 9.84K/s        | 15.56K/s           |
-| HSET+HGET       | 4.63K/s        | 10.95K/s           |
-| HGETALL(50)     | 9.19K/s        | 8.19K/s            |
-| SADD+SMEMBERS   | 9.16K/s        | 15.54K/s           |
-| LPUSH+LRANGE    | 7.97K/s        | 10.24K/s           |
-| ZADD+ZRANGE     | 8.08K/s        | 2.89K/s            |
-| SET+DEL         | 4.60K/s        | 6.62K/s            |
-| FT.SEARCH       | 8.20K/s        | 7.20K/s            |
+| PING            | 8.79K/s        | 37.36K/s           |
+| SET+GET         | 4.68K/s        | 11.96K/s           |
+| MSET+MGET(10)   | 4.41K/s        | 5.81K/s            |
+| INCR            | 9.54K/s        | 18.97K/s           |
+| HSET+HGET       | 4.40K/s        | 11.91K/s           |
+| HGETALL(50)     | 8.39K/s        | 11.01K/s           |
+| HLEN(50)        | 9.36K/s        | 31.21K/s           |
+| SADD+SMEMBERS   | 9.27K/s        | 17.37K/s           |
+| LPUSH+LRANGE    | 8.34K/s        | 14.27K/s           |
+| LREM            | 4.37K/s        | 6.08K/s            |
+| ZADD+ZRANGE     | 7.80K/s        | 17.12K/s           |
+| SET+DEL         | 4.39K/s        | 9.57K/s            |
+| FT.SEARCH       | 8.36K/s        | 8.22K/s            |
 
 *Run `npm run benchmark -- --template default` to reproduce. Numbers depend on host and whether Redis is native or in Docker.*
 
