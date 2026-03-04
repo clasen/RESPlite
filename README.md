@@ -329,7 +329,7 @@ RESPLite implements **47 core Redis commands** (~19% of the ~246 commands in Red
 | **Lists** | LPUSH, RPUSH, LLEN, LRANGE, LINDEX, LPOP, RPOP, BLPOP, BRPOP |
 | **Sorted sets** | ZADD, ZREM, ZCARD, ZSCORE, ZRANGE, ZRANGEBYSCORE |
 | **Search (FT.\*)** | FT.CREATE, FT.INFO, FT.ADD, FT.DEL, FT.SEARCH, FT.SUGADD, FT.SUGGET, FT.SUGDEL |
-| **Introspection** | TYPE, SCAN |
+| **Introspection** | TYPE, SCAN, KEYS, MONITOR |
 | **Admin** | SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
 | **Tooling** | Redis import CLI (see Migration from Redis) |
 

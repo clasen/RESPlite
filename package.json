@@ -1,6 +1,6 @@
 {
   "name": "resplite",
-  "version": "1.1.6",
+  "version": "1.1.8",
   "description": "A RESP2 server with practical Redis compatibility, backed by SQLite",
   "type": "module",
   "main": "src/index.js",

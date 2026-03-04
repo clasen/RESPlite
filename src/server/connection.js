@@ -5,6 +5,7 @@
 import { RESPReader } from '../resp/parser.js';
 import { dispatch } from '../commands/registry.js';
 import { encode, encodeSimpleString, encodeError } from '../resp/encoder.js';
+import { registerMonitorClient, unregisterMonitorClient, broadcastMonitorCommand } from './monitor.js';
 
 let nextConnectionId = 0;
 
@@ -17,6 +18,8 @@ export function handleConnection(socket, engine) {
   const connectionId = ++nextConnectionId;
   const context = {
     connectionId,
+    monitorMode: false,
+    clientAddress: `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 0}`,
     writeResponse(buf) {
       if (socket.writable) socket.write(buf);
     },
@@ -46,7 +49,18 @@ export function handleConnection(socket, engine) {
     reader.feed(chunk);
     const commands = reader.parseCommands();
     for (const argv of commands) {
+      const cmd = argv[0] ? argv[0].toString('utf8').toUpperCase() : '';
+      if (context.monitorMode && cmd !== 'QUIT') {
+        socket.write(encodeError('ERR MONITOR mode only supports QUIT'));
+        continue;
+      }
       const out = dispatch(engine, argv, context);
+      if (cmd === 'MONITOR' && !out.error) {
+        context.monitorMode = true;
+        registerMonitorClient(context);
+      } else if (!context.monitorMode) {
+        broadcastMonitorCommand(argv, context);
+      }
       if (out.quit) {
         writeResult(out);
         return;
@@ -77,6 +91,7 @@ export function handleConnection(socket, engine) {
 
   socket.on('close', () => {
     if (engine._blockingManager) engine._blockingManager.cancel(connectionId);
+    unregisterMonitorClient(connectionId);
   });
 
   socket.on('error', () => {});

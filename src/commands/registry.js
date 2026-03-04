@@ -46,6 +46,7 @@ import * as lrem from './lrem.js';
 import * as blpop from './blpop.js';
 import * as brpop from './brpop.js';
 import * as scan from './scan.js';
+import * as keys from './keys.js';
 import * as zadd from './zadd.js';
 import * as zrem from './zrem.js';
 import * as zcard from './zcard.js';
@@ -63,6 +64,7 @@ import * as ftSearch from './ft-search.js';
 import * as ftSugadd from './ft-sugadd.js';
 import * as ftSugget from './ft-sugget.js';
 import * as ftSugdel from './ft-sugdel.js';
+import * as monitor from './monitor.js';
 
 const HANDLERS = new Map([
   ['PING', (e, a) => ping.handlePing()],
@@ -108,6 +110,7 @@ const HANDLERS = new Map([
   ['BLPOP', (e, a, ctx) => blpop.handleBlpop(e, a, ctx)],
   ['BRPOP', (e, a, ctx) => brpop.handleBrpop(e, a, ctx)],
   ['SCAN', (e, a) => scan.handleScan(e, a)],
+  ['KEYS', (e, a) => keys.handleKeys(e, a)],
   ['ZADD', (e, a) => zadd.handleZadd(e, a)],
   ['ZREM', (e, a) => zrem.handleZrem(e, a)],
   ['ZCARD', (e, a) => zcard.handleZcard(e, a)],
@@ -125,6 +128,7 @@ const HANDLERS = new Map([
   ['FT.SUGADD', (e, a) => ftSugadd.handleFtSugadd(e, a)],
   ['FT.SUGGET', (e, a) => ftSugget.handleFtSugget(e, a)],
   ['FT.SUGDEL', (e, a) => ftSugdel.handleFtSugdel(e, a)],
+  ['MONITOR', (e, a, ctx) => monitor.handleMonitor(a, ctx)],
 ]);
 
 /**
