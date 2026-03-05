@@ -17,6 +17,16 @@ import { openDb } from './storage/sqlite/db.js';
 export { handleConnection, createEngine, openDb };
 
 /**
+ * Optional event hooks for observability (e.g. logging unknown commands or errors).
+ * All hooks are optional. Called with plain objects; do not mutate.
+ *
+ * @typedef {object} RESPliteHooks
+ * @property {(payload: { command: string, argsCount: number, clientAddress: string, connectionId: number }) => void} [onUnknownCommand] Invoked when the client sends a command not implemented by RESPLite.
+ * @property {(payload: { command: string, error: string, clientAddress: string, connectionId: number }) => void} [onCommandError] Invoked when a command handler throws or returns an error (e.g. WRONGTYPE, invalid args).
+ * @property {(payload: { error: Error, clientAddress: string, connectionId: number }) => void} [onSocketError] Invoked when a connection socket emits an error (e.g. ECONNRESET).
+ */
+
+/**
  * Start an embedded RESPLite server.
  *
  * @param {object} [options]
@@ -24,6 +34,7 @@ export { handleConnection, createEngine, openDb };
  * @param {string} [options.host='127.0.0.1']     Host to listen on.
  * @param {number} [options.port=0]               Port to listen on (0 = OS-assigned).
  * @param {string} [options.pragmaTemplate='default'] PRAGMA preset (default|performance|safety|minimal|none).
+ * @param {RESPliteHooks} [options.hooks]         Optional event hooks for observability (onUnknownCommand, onCommandError, onSocketError).
  * @returns {Promise<{ port: number, host: string, close: () => Promise<void> }>}
  */
 export async function createRESPlite({
@@ -31,14 +42,38 @@ export async function createRESPlite({
   host = '127.0.0.1',
   port = 0,
   pragmaTemplate = 'default',
+  hooks = {},
 } = {}) {
   const db = openDb(dbPath, { pragmaTemplate });
   const engine = createEngine({ db });
-  const server = net.createServer((socket) => handleConnection(socket, engine));
+  const connections = new Set();
+
+  const server = net.createServer((socket) => {
+    connections.add(socket);
+    socket.once('close', () => connections.delete(socket));
+    handleConnection(socket, engine, hooks);
+  });
   await new Promise((resolve) => server.listen(port, host, resolve));
+
+  let closePromise = null;
+  const close = () => {
+    if (closePromise) return closePromise;
+    closePromise = new Promise((resolve) => {
+      for (const socket of connections) {
+        socket.destroy();
+      }
+      connections.clear();
+      server.close(() => {
+        db.close();
+        resolve();
+      });
+    });
+    return closePromise;
+  };
+
   return {
     port: server.address().port,
     host,
-    close: () => new Promise((resolve) => server.close(() => { db.close(); resolve(); })),
+    close,
   };
 }

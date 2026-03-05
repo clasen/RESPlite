@@ -87,7 +87,7 @@ OK
 
 ### Standalone server script (fixed port)
 
-Run this as a persistent background process (`node server.js`). RESPLite will listen on port 6380 and stay up until the process is killed.
+Run this as a persistent background process (`node server.js`). RESPLite will listen on port 6380 and stay up until the process receives SIGINT (Ctrl+C) or SIGTERM; then it closes the server and exits cleanly.
 
 ```javascript
 // server.js
@@ -95,6 +95,14 @@ import { createRESPlite } from 'resplite/embed';
 
 const srv = await createRESPlite({ port: 6380, db: './data.db' });
 console.log(`RESPLite listening on ${srv.host}:${srv.port}`);
+
+async function shutdown() {
+  await srv.close();
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 ```
 
 Then connect from any other script or process:
@@ -141,6 +149,37 @@ console.log(await client.get('hello'));  // → "world"
 await client.quit();
 await srv.close();
 ```
+
+### Observability (event hooks)
+
+When embedding RESPLite you can pass optional hooks to log unknown commands, command errors, or socket errors (e.g. for `warn`/`error` in your logger). The client still receives the same RESP responses; hooks are for observability only.
+
+```javascript
+import pino from 'pino';
+const log = pino(); // or your logger
+
+const srv = await createRESPlite({
+  port: 6380,
+  db: './data.db',
+  hooks: {
+    onUnknownCommand({ command, argsCount, clientAddress }) {
+      log.warn({ command, argsCount, clientAddress }, 'RESPLite: unsupported command');
+    },
+    onCommandError({ command, error, clientAddress }) {
+      log.warn({ command, error, clientAddress }, 'RESPLite: command error');
+    },
+    onSocketError({ error, clientAddress }) {
+      log.error({ err: error, clientAddress }, 'RESPLite: connection error');
+    },
+  },
+});
+```
+
+| Hook | When it is called |
+|------|--------------------|
+| `onUnknownCommand` | Client sent a command not implemented by RESPLite (e.g. `SUBSCRIBE`, `PUBLISH`). |
+| `onCommandError` | A command failed (wrong type, invalid args, or handler threw). |
+| `onSocketError` | The connection socket emitted an error (e.g. `ECONNRESET`). |
 
 ### Strings, TTL, and key operations
 

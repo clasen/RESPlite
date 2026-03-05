@@ -88,4 +88,69 @@ describe('createRESPlite', () => {
     await client.quit();
     await srv.close();
   });
+
+  it('unsupported command still returns ERR command not supported yet to client', async () => {
+    const srv = await createRESPlite();
+    const client = await redisClient(srv.port);
+    try {
+      await client.sendCommand(['SUBSCRIBE', 'ch']);
+      assert.fail('expected error');
+    } catch (e) {
+      assert.ok(e.message.includes('not supported'), e.message);
+    }
+    await client.quit();
+    await srv.close();
+  });
+
+  it('onUnknownCommand hook is called for unsupported commands', async () => {
+    const unknownCalls = [];
+    const srv = await createRESPlite({
+      hooks: {
+        onUnknownCommand(payload) {
+          unknownCalls.push(payload);
+        },
+      },
+    });
+    const client = await redisClient(srv.port);
+    try {
+      await client.sendCommand(['SUBSCRIBE', 'ch']);
+    } catch (_) {}
+    try {
+      await client.sendCommand(['PUBLISH', 'ch', 'x']);
+    } catch (_) {}
+    await client.quit();
+    await srv.close();
+    const commands = unknownCalls.map((c) => c.command);
+    assert.ok(commands.includes('SUBSCRIBE'), 'expected SUBSCRIBE in ' + commands.join(', '));
+    assert.ok(commands.includes('PUBLISH'), 'expected PUBLISH in ' + commands.join(', '));
+    const sub = unknownCalls.find((c) => c.command === 'SUBSCRIBE');
+    const pub = unknownCalls.find((c) => c.command === 'PUBLISH');
+    assert.equal(sub.argsCount, 1);
+    assert.equal(pub.argsCount, 2);
+    assert.equal(typeof sub.connectionId, 'number');
+    assert.ok(sub.clientAddress.length > 0);
+  });
+
+  it('onCommandError hook is called when command returns or throws error', async () => {
+    const errorCalls = [];
+    const srv = await createRESPlite({
+      hooks: {
+        onCommandError(payload) {
+          errorCalls.push(payload);
+        },
+      },
+    });
+    const client = await redisClient(srv.port);
+    await client.set('k', 'str');
+    try {
+      await client.hGet('k', 'f');
+    } catch (_) {}
+    await client.quit();
+    await srv.close();
+    assert.equal(errorCalls.length, 1);
+    assert.equal(errorCalls[0].command, 'HGET');
+    assert.ok(errorCalls[0].error.includes('WRONGTYPE'));
+    assert.equal(typeof errorCalls[0].connectionId, 'number');
+    assert.ok(errorCalls[0].clientAddress.length > 0);
+  });
 });

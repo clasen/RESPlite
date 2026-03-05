@@ -135,7 +135,7 @@ const HANDLERS = new Map([
  * Dispatch command. Full argv: [commandNameBuf, ...argBuffers].
  * @param {object} engine
  * @param {Buffer[]} argv - first element is command name, rest are arguments
- * @param {object} [context] - optional connection context (connectionId, writeResponse) for blocking commands
+ * @param {object} [context] - optional connection context (connectionId, clientAddress, writeResponse, onUnknownCommand, onCommandError)
  * @returns {{ result: unknown } | { error: string } | { quit: true } | { block: object }}
  */
 export function dispatch(engine, argv, context) {
@@ -146,17 +146,38 @@ export function dispatch(engine, argv, context) {
   const args = argv.slice(1);
   const handler = HANDLERS.get(cmd);
   if (!handler) {
+    context?.onUnknownCommand?.({
+      command: cmd,
+      argsCount: args.length,
+      clientAddress: context.clientAddress ?? '',
+      connectionId: context.connectionId ?? 0,
+    });
     return { error: unsupported() };
   }
   try {
     const result = handler(engine, args, context);
     if (result && result.quit) return result;
-    if (result && result.error) return result;
+    if (result && result.error) {
+      context?.onCommandError?.({
+        command: cmd,
+        error: result.error,
+        clientAddress: context.clientAddress ?? '',
+        connectionId: context.connectionId ?? 0,
+      });
+      return result;
+    }
     if (result && result.block) return result;
     return { result };
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
-    return { error: msg.startsWith('ERR ') ? msg : 'ERR ' + msg };
+    const errorMsg = msg.startsWith('ERR ') ? msg : 'ERR ' + msg;
+    context?.onCommandError?.({
+      command: cmd,
+      error: errorMsg,
+      clientAddress: context.clientAddress ?? '',
+      connectionId: context.connectionId ?? 0,
+    });
+    return { error: errorMsg };
   }
 }
 

@@ -12,17 +12,22 @@ let nextConnectionId = 0;
 /**
  * @param {import('net').Socket} socket
  * @param {object} engine
+ * @param {object} [hooks] Optional: onUnknownCommand, onCommandError, onSocketError
  */
-export function handleConnection(socket, engine) {
+export function handleConnection(socket, engine, hooks = {}) {
   const reader = new RESPReader();
   const connectionId = ++nextConnectionId;
+  const clientAddress = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 0}`;
   const context = {
     connectionId,
+    clientAddress,
     monitorMode: false,
-    clientAddress: `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 0}`,
     writeResponse(buf) {
       if (socket.writable) socket.write(buf);
     },
+    onUnknownCommand: hooks.onUnknownCommand,
+    onCommandError: hooks.onCommandError,
+    onSocketError: hooks.onSocketError,
   };
 
   function writeResult(out) {
@@ -94,5 +99,7 @@ export function handleConnection(socket, engine) {
     unregisterMonitorClient(connectionId);
   });
 
-  socket.on('error', () => {});
+  socket.on('error', (err) => {
+    context.onSocketError?.({ error: err, clientAddress: context.clientAddress, connectionId: context.connectionId });
+  });
 }
