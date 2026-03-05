@@ -160,7 +160,7 @@ Exact fields may evolve, but these should exist.
 
 ## D.5.3 Errors
 
-* Missing index: `-ERR unknown index`
+* Missing index: `-Unknown index name`
 
 ---
 
@@ -212,7 +212,7 @@ RESP reply: `+OK`
 
 ## D.6.6 Errors
 
-* Index missing: `-ERR unknown index`
+* Index missing: `-Unknown index name`
 * Wrong syntax: `-ERR syntax error`
 * Missing `FIELDS`: `-ERR syntax error`
 * Unknown field: `-ERR unknown field`
@@ -248,7 +248,7 @@ RESP Integer:
 
 ## D.7.4 Errors
 
-* Index missing: `-ERR unknown index`
+* Index missing: `-Unknown index name`
 
 ---
 
@@ -346,7 +346,7 @@ Compute total efficiently:
 
 ## D.8.8 Errors
 
-* Index missing: `-ERR unknown index`
+* Index missing: `-Unknown index name`
 * Bad syntax: `-ERR syntax error`
 * Invalid LIMIT: `-ERR invalid limit`
 * Unsafe query: `-ERR invalid query`
@@ -383,7 +383,7 @@ RESP Integer:
 
 ### Errors
 
-* Index missing: `-ERR unknown index`
+* Index missing: `-Unknown index name`
 * Score invalid: `-ERR invalid score`
 
 ## D.9.2 FT.SUGGET
@@ -425,7 +425,7 @@ Not supported (v1):
 
 ### Errors
 
-* Index missing: `-ERR unknown index`
+* Index missing: `-Unknown index name`
 * Bad syntax: `-ERR syntax error`
 
 ## D.9.3 FT.SUGDEL
@@ -449,7 +449,7 @@ RESP Integer:
 
 ### Errors
 
-* Index missing: `-ERR unknown index`
+* Index missing: `-Unknown index name`
 
 ---
 

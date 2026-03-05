@@ -33,6 +33,6 @@ export function handleFtSearch(engine, args) {
     return out;
   } catch (e) {
     const msg = e?.message ?? String(e);
-    return { error: msg.startsWith('ERR ') ? msg : 'ERR ' + msg };
+    return { error: msg === 'Unknown index name' ? msg : msg.startsWith('ERR ') ? msg : 'ERR ' + msg };
   }
 }

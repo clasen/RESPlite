@@ -135,6 +135,6 @@ describe('Search layer', () => {
   });
 
   it('getIndexMeta throws for unknown index', () => {
-    assert.throws(() => getIndexMeta(db, 'nonexistent'), /unknown index/);
+    assert.throws(() => getIndexMeta(db, 'nonexistent'), /Unknown index name/);
   });
 });

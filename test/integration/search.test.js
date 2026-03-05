@@ -117,7 +117,7 @@ describe('Search integration', () => {
     const reply = await sendCommand(port, argv('FT.INFO', 'nonexistent'));
     const v = tryParseValue(reply, 0).value;
     const err = v?.error ?? v;
-    assert.ok(String(err).includes('unknown index'));
+    assert.ok(String(err).includes('Unknown index name'));
   });
 });
 

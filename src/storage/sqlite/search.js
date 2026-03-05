@@ -116,7 +116,7 @@ export function getIndexMeta(db, name) {
   const row = db.prepare(
     'SELECT name, schema_json, created_at, updated_at FROM search_indices WHERE name = ?'
   ).get(name);
-  if (!row) throw new Error('ERR unknown index');
+  if (!row) throw new Error('Unknown index name');
   const schema = JSON.parse(row.schema_json);
   return {
     name: row.name,

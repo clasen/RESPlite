@@ -15,6 +15,6 @@ export function handleFtCreate(engine, args) {
     return { simple: 'OK' };
   } catch (e) {
     const msg = e?.message ?? String(e);
-    return { error: msg.startsWith('ERR ') ? msg : 'ERR ' + msg };
+    return { error: msg === 'Unknown index name' ? msg : msg.startsWith('ERR ') ? msg : 'ERR ' + msg };
   }
 }
