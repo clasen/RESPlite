@@ -622,8 +622,6 @@ const result = await m.migrateSearch({
 
 ## Compatibility matrix
 
-RESPLite implements **47 core Redis commands** (~19% of the ~246 commands in Redis 7). The uncovered 81% is mostly entire subsystems that are out of scope by design: pub/sub (~10 commands), Streams (~20), cluster/replication (~30), Lua scripting (~5), server admin (~40), and extended variants of data-structure commands. For typical single-node application workloads — strings, hashes, sets, lists, sorted sets, key TTLs — coverage is close to the commands developers reach for daily.
-
 ### Supported (v1)
 
 | Category | Commands |
