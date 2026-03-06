@@ -13,6 +13,7 @@
 * Perfect change-data-capture guarantees equivalent to replication logs.
 * Distributed migration across multiple import workers with strict ordering semantics.
 * Full fidelity for unsupported Redis data types (streams, modules, Lua scripts, etc.).
+* **Search indices (FT.\*):** Keyspace migration (`bulk` / `apply-dirty`) copies only the Redis KV data (strings, hashes, sets, lists, zsets). RediSearch index schemas and documents are migrated separately via the `migrate-search` step (§F.10).
 
 ---
 
@@ -258,6 +259,18 @@ Persist:
 
 If interrupted, `--resume` restarts from the stored cursor.
 
+## F.7.2.1 Graceful shutdown (SIGINT / SIGTERM)
+
+When the bulk import process receives SIGINT or SIGTERM it must:
+
+* Stop the import loop after the current key (no partial key).
+* Write a final checkpoint (cursor and counters) so progress is persisted.
+* Set run status to `aborted`.
+* Close the SQLite database handle so WAL is checkpointed and the file is not left open.
+* Remove signal handlers and exit (rethrow so the process exits non-zero).
+
+This ensures the destination DB is always closed cleanly when the process is killed or interrupted; the next run with `--resume` continues from the last checkpoint.
+
 ## F.7.3 Throughput controls
 
 The importer must support:
@@ -494,6 +507,87 @@ If dirty tracker disconnects:
 
   * writes should upsert
   * deletions should be no-op if missing
+
+---
+
+# F.10 Search Index Migration (FT.* / RediSearch)
+
+## F.10.1 Overview
+
+When the source is a Redis instance with **RediSearch** (Redis Stack or the `redis/search` module), search indices can be migrated with the `migrate-search` step. This step is independent of the KV bulk import and can be run at any time (before or after `bulk`).
+
+## F.10.2 Algorithm
+
+For each index in the source:
+
+1. **`FT._LIST`** → enumerate all index names.
+2. **`FT.INFO <name>`** → read `index_definition` (key type, prefix patterns) and `attributes` (field names and types).
+3. **Schema mapping** (see §F.10.3).
+4. **`FT.CREATE`** in RespLite with the mapped schema. Skip if already exists (controlled by `skipExisting`).
+5. **SCAN** keys matching each index prefix → **HGETALL** → `addDocument` in SQLite batches.
+6. **`FT.SUGGET "" MAX n WITHSCORES`** → import suggestions into RespLite.
+
+## F.10.3 Field type mapping
+
+| RediSearch type | RespLite type | Notes |
+|-----------------|---------------|-------|
+| TEXT            | TEXT          | Direct mapping |
+| TAG             | TEXT          | Values preserved as-is; TAG filtering semantics lost |
+| NUMERIC         | TEXT          | Values stored as strings; numeric range queries not supported |
+| GEO, VECTOR, … | —             | Skipped with warning |
+
+RespLite requires a `payload` TEXT field. If none of the source fields maps to `payload`, a `payload` field is added automatically and synthesised at import time by concatenating all other text values.
+
+## F.10.4 Constraints
+
+* Only **HASH**-based indices are supported (`key_type = HASH`). JSON indices (RedisJSON) are skipped with an error.
+* Index names must match `[A-Za-z][A-Za-z0-9:_-]{0,63}`. Indices with invalid names are skipped with an error.
+* `FT.SUGGET` has no cursor; suggestions are imported up to `maxSuggestions` (default 10 000).
+* Document score is read from the `__score` or `score` hash field if present; defaults to `1.0`.
+
+## F.10.5 Graceful shutdown
+
+Same pattern as `bulk` (§F.7.2.1): SIGINT/SIGTERM finishes the current document, closes the SQLite DB cleanly, and exits with a non-zero code.
+
+## F.10.6 CLI
+
+```bash
+# Migrate all RediSearch indices
+resplite-import migrate-search \
+  --from redis://10.0.0.10:6379 \
+  --to   ./resplite.db
+
+# Migrate specific indices only
+resplite-import migrate-search \
+  --from redis://10.0.0.10:6379 \
+  --to   ./resplite.db \
+  --index products \
+  --index articles
+
+# Options
+#   --scan-count N          SCAN COUNT hint (default 500)
+#   --max-rps N             throttle (default unlimited)
+#   --batch-docs N          docs per SQLite transaction (default 200)
+#   --max-suggestions N     cap for FT.SUGGET (default 10000)
+#   --no-skip               overwrite if index already exists
+#   --no-suggestions        skip suggestion import
+```
+
+## F.10.7 Programmatic API
+
+```javascript
+const m = createMigration({ from, to, runId });
+
+const result = await m.migrateSearch({
+  onlyIndices:    ['products', 'articles'], // omit for all
+  batchDocs:      200,
+  maxSuggestions: 10000,
+  skipExisting:   true,
+  withSuggestions: true,
+  onProgress: (r) => console.log(r.name, r.docsImported, r.warnings),
+});
+// result: { indices: [{ name, created, skipped, docsImported, docsSkipped, docErrors, sugsImported, warnings, error? }], aborted }
+```
 
 ---
 

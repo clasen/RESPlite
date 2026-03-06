@@ -35,6 +35,7 @@ export { handleConnection, createEngine, openDb };
  * @param {number} [options.port=0]               Port to listen on (0 = OS-assigned).
  * @param {string} [options.pragmaTemplate='default'] PRAGMA preset (default|performance|safety|minimal|none).
  * @param {RESPliteHooks} [options.hooks]         Optional event hooks for observability (onUnknownCommand, onCommandError, onSocketError).
+ * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to call close(). Set false if you handle shutdown yourself to avoid double handlers.
  * @returns {Promise<{ port: number, host: string, close: () => Promise<void> }>}
  */
 export async function createRESPlite({
@@ -43,6 +44,7 @@ export async function createRESPlite({
   port = 0,
   pragmaTemplate = 'default',
   hooks = {},
+  gracefulShutdown = true,
 } = {}) {
   const db = openDb(dbPath, { pragmaTemplate });
   const engine = createEngine({ db });
@@ -70,6 +72,14 @@ export async function createRESPlite({
     });
     return closePromise;
   };
+
+  if (gracefulShutdown) {
+    const onSignal = () => {
+      close().then(() => process.exit(0));
+    };
+    process.on('SIGTERM', onSignal);
+    process.on('SIGINT', onSignal);
+  }
 
   return {
     port: server.address().port,

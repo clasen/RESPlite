@@ -24,6 +24,7 @@ import { runPreflight, readKeyspaceEvents, setKeyspaceEvents } from './preflight
 import { runBulkImport } from './bulk.js';
 import { runApplyDirty } from './apply-dirty.js';
 import { runVerify } from './verify.js';
+import { runMigrateSearch } from './migrate-search.js';
 import { getRun, getDirtyCounts } from './registry.js';
 
 /**
@@ -50,6 +51,7 @@ import { getRun, getDirtyCounts } from './registry.js';
  *   status(): { run: object, dirty: object } | null,
  *   applyDirty(opts?: { batchKeys?: number, maxRps?: number }): Promise<object>,
  *   verify(opts?: { samplePct?: number, maxSample?: number }): Promise<object>,
+ *   migrateSearch(opts?: { onlyIndices?: string[], scanCount?: number, maxRps?: number, batchDocs?: number, maxSuggestions?: number, skipExisting?: boolean, withSuggestions?: boolean, onProgress?: function }): Promise<object>,
  *   close(): Promise<void>,
  * }}
  */
@@ -113,11 +115,11 @@ export function createMigration({
 
     /**
      * Step 1 — Bulk import: SCAN all keys from Redis into the destination DB.
-     * Supports resume (checkpoint-based) and optional progress callback.
+     * Resume is on by default: first run starts from 0, later runs continue from checkpoint.
      *
-     * @param {{ resume?: boolean, onProgress?: (run: object) => void }} [opts]
+     * @param {{ resume?: boolean, onProgress?: (run: object) => void }} [opts] - resume (default true): start or continue automatically
      */
-    async bulk({ resume = false, onProgress } = {}) {
+    async bulk({ resume = true, onProgress } = {}) {
       const id = requireRunId();
       const client = await getClient();
       return runBulkImport(client, to, id, {
@@ -174,6 +176,35 @@ export function createMigration({
     },
 
     /**
+     * Step 5 — Migrate search indices: copy RediSearch index schemas and documents
+     * into RespLite FT.* tables.
+     *
+     * Requires RediSearch (Redis Stack or redis/search module) on the source.
+     * Only HASH-based indices with TEXT/TAG/NUMERIC fields are supported.
+     * TAG and NUMERIC fields are mapped to TEXT.
+     *
+     * @param {{
+     *   onlyIndices?: string[],
+     *   scanCount?: number,
+     *   maxRps?: number,
+     *   batchDocs?: number,
+     *   maxSuggestions?: number,
+     *   skipExisting?: boolean,
+     *   withSuggestions?: boolean,
+     *   onProgress?: (result: object) => void
+     * }} [opts]
+     * @returns {Promise<{ indices: object[], aborted: boolean }>}
+     */
+    async migrateSearch(opts = {}) {
+      const client = await getClient();
+      return runMigrateSearch(client, to, {
+        pragmaTemplate,
+        maxRps,
+        ...opts,
+      });
+    },
+
+    /**
      * Disconnect from Redis. Call when done with all migration operations.
      */
     async close() {
@@ -185,6 +216,6 @@ export function createMigration({
   };
 }
 
-export { runPreflight, readKeyspaceEvents, setKeyspaceEvents, runBulkImport, runApplyDirty, runVerify };
+export { runPreflight, readKeyspaceEvents, setKeyspaceEvents, runBulkImport, runApplyDirty, runVerify, runMigrateSearch };
 export { startDirtyTracker } from './tracker.js';
 export { getRun, getDirtyCounts, createRun, setRunStatus, logError } from './registry.js';

@@ -11,9 +11,10 @@ import { runPreflight } from '../migration/preflight.js';
 import { runBulkImport } from '../migration/bulk.js';
 import { runApplyDirty } from '../migration/apply-dirty.js';
 import { runVerify } from '../migration/verify.js';
+import { runMigrateSearch } from '../migration/migrate-search.js';
 import { getRun, getDirtyCounts } from '../migration/registry.js';
 
-const SUBCOMMANDS = ['preflight', 'bulk', 'status', 'apply-dirty', 'verify'];
+const SUBCOMMANDS = ['preflight', 'bulk', 'status', 'apply-dirty', 'verify', 'migrate-search'];
 
 function parseArgs(argv = process.argv.slice(2)) {
   const args = { _: [] };
@@ -47,10 +48,23 @@ function parseArgs(argv = process.argv.slice(2)) {
       }
     } else if (arg === '--resume') {
       args.resume = true;
+    } else if (arg === '--no-resume') {
+      args.resume = false;
     } else if (arg === '--pragma-template' && argv[i + 1]) {
       args.pragmaTemplate = argv[++i];
     } else if (arg === '--sample' && argv[i + 1]) {
       args.sample = argv[++i];
+    } else if (arg === '--index' && argv[i + 1]) {
+      if (!args.index) args.index = [];
+      args.index.push(argv[++i]);
+    } else if (arg === '--batch-docs' && argv[i + 1]) {
+      args.batchDocs = parseInt(argv[++i], 10);
+    } else if (arg === '--max-suggestions' && argv[i + 1]) {
+      args.maxSuggestions = parseInt(argv[++i], 10);
+    } else if (arg === '--no-skip') {
+      args.noSkip = true;
+    } else if (arg === '--no-suggestions') {
+      args.noSuggestions = true;
     } else if (arg.startsWith('--')) {
       args[arg.slice(2).replace(/-/g, '')] = argv[i + 1] ?? true;
       if (argv[i + 1] && !argv[i + 1].startsWith('--')) i++;
@@ -120,7 +134,7 @@ async function cmdBulk(args) {
       max_rps: args.maxRps || 0,
       batch_keys: args.batchKeys || 200,
       batch_bytes: args.batchBytes || 64 * 1024 * 1024,
-      resume: !!args.resume,
+      resume: args.resume !== false, // default true: start from 0 or continue from checkpoint
       onProgress: (r) => {
         console.log(`  scanned=${r.scanned_keys} migrated=${r.migrated_keys} skipped=${r.skipped_keys} errors=${r.error_keys} cursor=${r.scan_cursor}`);
       },
@@ -198,28 +212,73 @@ async function cmdVerify(args) {
   }
 }
 
+async function cmdMigrateSearch(args) {
+  const redisUrl = getRedisUrl(args);
+  const dbPath   = getDbPath(args);
+  const client   = createClient({ url: redisUrl });
+  client.on('error', (e) => console.error('Redis:', e.message));
+  await client.connect();
+  try {
+    const onlyIndices = args.index
+      ? (Array.isArray(args.index) ? args.index : [args.index])
+      : null;
+
+    const result = await runMigrateSearch(client, dbPath, {
+      pragmaTemplate:  args.pragmaTemplate || 'default',
+      onlyIndices,
+      scanCount:       args.scanCount       || 500,
+      maxRps:          args.maxRps          || 0,
+      batchDocs:       args.batchDocs       || 200,
+      maxSuggestions:  args.maxSuggestions  || 10000,
+      skipExisting:    args.noSkip ? false : true,
+      withSuggestions: args.noSuggestions ? false : true,
+      onProgress: (r) => {
+        const status = r.error ? `ERROR: ${r.error}` : (r.skipped ? 'skipped (already exists)' : 'created');
+        console.log(`  [${r.name}] ${status} — docs=${r.docsImported} skipped=${r.docsSkipped} errors=${r.docErrors} sugs=${r.sugsImported}`);
+        if (r.warnings?.length) r.warnings.forEach((w) => console.log(`    WARN: ${w}`));
+      },
+    });
+
+    if (result.aborted) console.log('Migration aborted by signal.');
+    console.log(`Done. Indices processed: ${result.indices.length}`);
+    const errors = result.indices.filter((i) => i.error);
+    if (errors.length) {
+      console.error(`  ${errors.length} index(es) failed:`);
+      errors.forEach((i) => console.error(`  - ${i.name}: ${i.error}`));
+    }
+  } finally {
+    await client.quit();
+  }
+}
+
 async function main() {
   const args = parseArgs();
   const sub = args._[0];
   if (!SUBCOMMANDS.includes(sub)) {
-    console.error('Usage: resplite-import <preflight|bulk|status|apply-dirty|verify> [options]');
-    console.error('  --from <redis-url>   (default: redis://127.0.0.1:6379)');
-    console.error('  --to <db-path>       (required for bulk, status, apply-dirty, verify)');
-    console.error('  --run-id <id>        (required for bulk, status, apply-dirty)');
-    console.error('  --scan-count N       (bulk, default 1000)');
-    console.error('  --max-rps N          (bulk, apply-dirty)');
-    console.error('  --batch-keys N       (default 200)');
-    console.error('  --batch-bytes N[MB|KB|GB] (default 64MB)');
-    console.error('  --resume             (bulk: resume from checkpoint)');
-    console.error('  --sample 0.5%        (verify, default 0.5%)');
+    console.error('Usage: resplite-import <preflight|bulk|status|apply-dirty|verify|migrate-search> [options]');
+    console.error('  --from <redis-url>       (default: redis://127.0.0.1:6379)');
+    console.error('  --to <db-path>           (required for bulk, status, apply-dirty, verify, migrate-search)');
+    console.error('  --run-id <id>            (required for bulk, status, apply-dirty)');
+    console.error('  --scan-count N           (bulk / migrate-search, default 1000 / 500)');
+    console.error('  --max-rps N              (bulk, apply-dirty, migrate-search)');
+    console.error('  --batch-keys N           (default 200)');
+    console.error('  --batch-bytes N[MB|KB|GB](default 64MB)');
+    console.error('  --resume / --no-resume   (bulk: default resume=on)');
+    console.error('  --sample 0.5%            (verify, default 0.5%)');
+    console.error('  --index <name>           (migrate-search: repeat for multiple; omit for all indices)');
+    console.error('  --batch-docs N           (migrate-search: docs per SQLite tx, default 200)');
+    console.error('  --max-suggestions N      (migrate-search: cap for FT.SUGGET, default 10000)');
+    console.error('  --no-skip                (migrate-search: overwrite if index exists)');
+    console.error('  --no-suggestions         (migrate-search: skip suggestion import)');
     process.exit(1);
   }
   try {
-    if (sub === 'preflight') await cmdPreflight(args);
-    else if (sub === 'bulk') await cmdBulk(args);
-    else if (sub === 'status') await cmdStatus(args);
-    else if (sub === 'apply-dirty') await cmdApplyDirty(args);
-    else if (sub === 'verify') await cmdVerify(args);
+    if (sub === 'preflight')       await cmdPreflight(args);
+    else if (sub === 'bulk')       await cmdBulk(args);
+    else if (sub === 'status')     await cmdStatus(args);
+    else if (sub === 'apply-dirty')await cmdApplyDirty(args);
+    else if (sub === 'verify')     await cmdVerify(args);
+    else if (sub === 'migrate-search') await cmdMigrateSearch(args);
   } catch (err) {
     console.error(err);
     process.exit(1);
@@ -234,4 +293,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, cmdPreflight, cmdBulk, cmdStatus, cmdApplyDirty, cmdVerify };
+export { parseArgs, cmdPreflight, cmdBulk, cmdStatus, cmdApplyDirty, cmdVerify, cmdMigrateSearch };

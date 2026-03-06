@@ -87,7 +87,7 @@ OK
 
 ### Standalone server script (fixed port)
 
-Run this as a persistent background process (`node server.js`). RESPLite will listen on port 6380 and stay up until the process receives SIGINT (Ctrl+C) or SIGTERM; then it closes the server and exits cleanly.
+Run this as a persistent background process (`node server.js`). RESPLite will listen on port 6380 and stay up until the process receives SIGINT (Ctrl+C) or SIGTERM; then it closes the server and exits cleanly. If you kill the process (e.g. SIGKILL or force quit), all client connections are closed as well — with the default configuration the server runs in the same process, so when the process exits the TCP server and its connections are torn down.
 
 ```javascript
 // server.js
@@ -96,13 +96,6 @@ import { createRESPlite } from 'resplite/embed';
 const srv = await createRESPlite({ port: 6380, db: './data.db' });
 console.log(`RESPLite listening on ${srv.host}:${srv.port}`);
 
-async function shutdown() {
-  await srv.close();
-  process.exit(0);
-}
-
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
 ```
 
 Then connect from any other script or process:
@@ -180,6 +173,222 @@ const srv = await createRESPlite({
 | `onUnknownCommand` | Client sent a command not implemented by RESPLite (e.g. `SUBSCRIBE`, `PUBLISH`). |
 | `onCommandError` | A command failed (wrong type, invalid args, or handler threw). |
 | `onSocketError` | The connection socket emitted an error (e.g. `ECONNRESET`). |
+
+## Migration from Redis
+
+RESPLite is a good fit for migrating **non-replicated Redis** instances that have **grown large** (e.g. tens of GB) and where RESPLite's latency is acceptable. The flow (dirty-key tracker, bulk import, cutover) is designed for that scenario with minimal downtime.
+
+Migration supports two modes:
+
+### Programmatic migration API (JavaScript)
+
+As an alternative to the CLI, the full migration flow is available as a JavaScript API via `resplite/migration`. Useful for embedding the migration inside your own scripts or automation pipelines.
+
+```javascript
+import { createMigration } from 'resplite/migration';
+
+const m = createMigration({
+  from:  'redis://127.0.0.1:6379',  // source Redis URL (default)
+  to:    './resplite.db',           // destination SQLite DB path (required)
+  runId: 'my-migration-1',          // unique run ID (required for bulk/status/applyDirty)
+
+  // optional — same defaults as the CLI:
+  scanCount:      1000,
+  batchKeys:      200,
+  batchBytes:     64 * 1024 * 1024,  // 64 MB
+  maxRps:         0,                  // 0 = unlimited
+  pragmaTemplate: 'default',
+
+  // If your Redis deployment renamed CONFIG for security:
+  // configCommand: 'MYCONFIG',
+});
+
+// Step 0 — Preflight: inspect Redis before starting
+const info = await m.preflight();
+console.log('keys (estimate):', info.keyCountEstimate);
+console.log('type distribution:', info.typeDistribution);
+console.log('notify-keyspace-events:', info.notifyKeyspaceEvents);
+console.log('CONFIG available:', info.configCommandAvailable);  // false if renamed
+console.log('recommended params:', info.recommended);
+
+// Step 0b — Enable keyspace notifications (required for dirty-key tracking)
+// Reads the current value and merges the new flags — existing flags are preserved.
+const ks = await m.enableKeyspaceNotifications();
+// → { ok: true, previous: '', applied: 'KEA' }
+// If CONFIG is renamed and configCommand was not set, ok=false and error explains how to fix it.
+
+// Step 1 — Bulk import (checkpointed, resumable). Same script to start or continue.
+// Use keyCountEstimate from preflight to show progress % (estimate; actual count may change).
+const total = info.keyCountEstimate || 1;
+await m.bulk({
+  onProgress: (r) => {
+    const pct = total ? ((r.scanned_keys / total) * 100).toFixed(1) : '—';
+    console.log(
+      `scanned=${r.scanned_keys} migrated=${r.migrated_keys} errors=${r.error_keys} progress=${pct}%`
+    );
+  },
+});
+
+// Check status at any point (synchronous, no Redis needed)
+const { run, dirty } = m.status();
+console.log('bulk status:', run.status, '— dirty counts:', dirty);
+
+// Step 2 — Apply dirty keys that changed in Redis during bulk
+await m.applyDirty();
+
+// Step 3 — Verify a sample of keys match between Redis and the destination
+const result = await m.verify({ samplePct: 0.5, maxSample: 10000 });
+console.log(`verified ${result.sampled} keys — mismatches: ${result.mismatches.length}`);
+
+// Disconnect Redis when done
+await m.close();
+```
+
+**Automatic resume (default)**  
+`resume` defaults to `true`. It doesn't matter whether it's the first run or a resume: the same script works for both starting and continuing. The first run starts from cursor 0; if the process is interrupted (Ctrl+C, crash, etc.), running the script again continues from the last checkpoint. You don't need to pass `resume: false` on the first run or change anything to resume.
+
+**Graceful shutdown**  
+On SIGINT (Ctrl+C) or SIGTERM, the bulk importer checkpoints progress, sets the run status to `aborted`, closes the SQLite database cleanly (so WAL is checkpointed and the file is not left open), then exits. You can safely interrupt a long-running bulk and resume later.
+
+The dirty-key tracker (to capture writes during bulk) still runs as a separate process via `npx resplite-dirty-tracker`. The API above handles everything else in a single script.
+
+#### Renamed CONFIG command
+
+If your Redis instance has the `CONFIG` command renamed (a common hardening practice), pass the new name to `createMigration`:
+
+```javascript
+const m = createMigration({
+  from: 'redis://10.0.0.10:6379',
+  to:   './resplite.db',
+  runId: 'run_001',
+  configCommand: 'MYCONFIG',  // the renamed command
+});
+
+// preflight will use MYCONFIG GET notify-keyspace-events
+const info = await m.preflight();
+// info.configCommandAvailable → false if the name is wrong
+
+// enableKeyspaceNotifications will use MYCONFIG SET notify-keyspace-events KEA
+const result = await m.enableKeyspaceNotifications({ value: 'KEA' });
+```
+
+The same flag is available in the CLI:
+
+```bash
+npx resplite-dirty-tracker start --run-id run_001 --to ./resplite.db \
+  --from redis://10.0.0.10:6379 --config-command MYCONFIG
+```
+### Simple one-shot import
+
+For small datasets or when downtime is acceptable:
+
+```bash
+# Default: redis://127.0.0.1:6379 → ./data.db
+npm run import-from-redis -- --db ./migrated.db
+
+# Custom Redis URL
+npm run import-from-redis -- --db ./migrated.db --redis-url redis://127.0.0.1:6379
+
+# Or host/port
+npm run import-from-redis -- --db ./migrated.db --host 127.0.0.1 --port 6379
+
+# Optional: PRAGMA template for the target DB
+npm run import-from-redis -- --db ./migrated.db --pragma-template performance
+```
+
+### Redis with authentication
+
+Migration supports Redis instances protected by a password. Use a Redis URL that includes the password (or username and password for Redis 6+ ACL):
+
+- **Password only:** `redis://:PASSWORD@host:port`
+- **Username and password:** `redis://username:PASSWORD@host:port`
+
+Examples:
+
+```bash
+# One-shot import from authenticated Redis
+npm run import-from-redis -- --db ./migrated.db --redis-url "redis://:mysecret@127.0.0.1:6379"
+
+# flow: use --from with the full URL (or set RESPLITE_IMPORT_FROM)
+npx resplite-import preflight --from "redis://:mysecret@10.0.0.10:6379" --to ./resplite.db
+npx resplite-dirty-tracker start --run-id run_001 --from "redis://:mysecret@10.0.0.10:6379" --to ./resplite.db
+```
+
+For one-shot import, authentication is only available when using `--redis-url`; the `--host` / `--port` options do not support a password.
+
+**Search indices (FT.\*)**  
+The KV bulk migration imports only the Redis keyspace (strings, hashes, sets, lists, zsets). RediSearch index schemas and documents are migrated separately with the `migrate-search` step — see [Migrating RediSearch indices](#migrating-redisearch-indices) below.
+
+### Minimal-downtime migration
+
+For large datasets (~30 GB), use the Dirty Key Registry flow so the bulk of the migration runs online and only a short cutover is needed.
+
+**Enable keyspace notifications in Redis** (required for the dirty-key tracker). Either run at runtime:
+
+```bash
+redis-cli CONFIG SET notify-keyspace-events KEA
+```
+
+Or add to `redis.conf` and restart Redis:
+
+```
+notify-keyspace-events KEA
+```
+
+(`K` = keyspace prefix, `E` = keyevent prefix, `A` = all event types — lets the tracker see every key change and expiration.)
+
+> **Renamed CONFIG command?** Some Redis deployments rename `CONFIG` for security. Pass `--config-command <name>` to the CLI tools, or the `configCommand` option to the JS API — see below.
+
+1. **Preflight** – Check Redis, key count, type distribution, and that keyspace notifications are enabled:
+   ```bash
+   npx resplite-import preflight --from redis://10.0.0.10:6379 --to ./resplite.db
+   ```
+
+2. **Start dirty-key tracker** – Captures keys modified during bulk (requires `notify-keyspace-events` in Redis):
+   ```bash
+   npx resplite-dirty-tracker start --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db
+   # If CONFIG was renamed:
+   npx resplite-dirty-tracker start --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db --config-command MYCONFIG
+   ```
+
+3. **Bulk import** – SCAN and copy all keys; progress is checkpointed and resumable (resume is default; re-run the same command to continue after a stop):
+   ```bash
+   npx resplite-import bulk --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db \
+     --scan-count 1000 --max-rps 2000 --batch-keys 200 --batch-bytes 64MB
+   ```
+
+4. **Monitor** – Check run and dirty-key counts:
+   ```bash
+   npx resplite-import status --run-id run_001 --to ./resplite.db
+   ```
+
+5. **Cutover** – Freeze app writes to Redis, then apply remaining dirty keys:
+   ```bash
+   npx resplite-import apply-dirty --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db
+   ```
+
+6. **Stop tracker and switch** – Stop the tracker and point clients to RespLite:
+   ```bash
+   npx resplite-dirty-tracker stop --run-id run_001 --to ./resplite.db
+   ```
+
+7. **Verify** – Optional sampling check between Redis and destination:
+   ```bash
+   npx resplite-import verify --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db --sample 0.5%
+   ```
+
+Then start RespLite with the migrated DB: `RESPLITE_DB=./resplite.db npm start`.
+
+#### Low-level re-exports
+
+If you need more control, the individual functions and registry helpers are also exported:
+
+```javascript
+import {
+  runPreflight, runBulkImport, runApplyDirty, runVerify,
+  getRun, getDirtyCounts, createRun, setRunStatus, logError,
+} from 'resplite/migration';
+```
 
 ### Strings, TTL, and key operations
 
@@ -352,6 +561,65 @@ await c2.quit();
 await srv2.close();
 ```
 
+### Migrating RediSearch indices
+
+If your Redis source uses **RediSearch** (Redis Stack or the `redis/search` module), run `migrate-search` after (or during) the KV bulk import. It reads index schemas with `FT.INFO`, creates them in RespLite, and imports documents by scanning the matching hash keys.
+
+**CLI:**
+
+```bash
+# Migrate all indices
+npx resplite-import migrate-search \
+  --from redis://10.0.0.10:6379 \
+  --to   ./resplite.db
+
+# Migrate specific indices only
+npx resplite-import migrate-search \
+  --from redis://10.0.0.10:6379 \
+  --to   ./resplite.db \
+  --index products \
+  --index articles
+
+# Options
+#   --scan-count N          SCAN COUNT hint (default 500)
+#   --max-rps N             throttle Redis reads
+#   --batch-docs N          docs per SQLite transaction (default 200)
+#   --max-suggestions N     cap for suggestion import (default 10000)
+#   --no-skip               overwrite if the index already exists in RespLite
+#   --no-suggestions        skip suggestion import
+```
+
+**Programmatic API:**
+
+```javascript
+const m = createMigration({ from, to, runId });
+
+const result = await m.migrateSearch({
+  onlyIndices:     ['products', 'articles'], // omit to migrate all
+  batchDocs:       200,
+  maxSuggestions:  10000,
+  skipExisting:    true,   // default
+  withSuggestions: true,   // default
+  onProgress: (r) => console.log(r.name, r.docsImported, r.warnings),
+});
+// result.indices: [{ name, created, skipped, docsImported, docsSkipped, docErrors, sugsImported, warnings, error? }]
+// result.aborted: true if interrupted by SIGINT/SIGTERM
+```
+
+**What gets migrated:**
+
+| RediSearch type | RespLite | Notes |
+|---|---|---|
+| TEXT | TEXT | Direct |
+| TAG | TEXT | Values preserved; TAG filtering lost |
+| NUMERIC | TEXT | Stored as string; numeric range queries not supported |
+| GEO, VECTOR, … | skipped | Warning emitted per field |
+
+- Only **HASH**-based indices are supported. JSON (RedisJSON) indices are skipped.
+- A `payload` field is added automatically if none of the source fields maps to it.
+- Suggestions are imported via `FT.SUGGET "" MAX n WITHSCORES` (no cursor; capped at `maxSuggestions`).
+- Graceful shutdown: Ctrl+C finishes the current document, closes SQLite cleanly, and exits with a non-zero code.
+
 ## Compatibility matrix
 
 RESPLite implements **47 core Redis commands** (~19% of the ~246 commands in Redis 7). The uncovered 81% is mostly entire subsystems that are out of scope by design: pub/sub (~10 commands), Streams (~20), cluster/replication (~30), Lua scripting (~5), server admin (~40), and extended variants of data-structure commands. For typical single-node application workloads — strings, hashes, sets, lists, sorted sets, key TTLs — coverage is close to the commands developers reach for daily.
@@ -383,210 +651,6 @@ RESPLite implements **47 core Redis commands** (~19% of the ~246 commands in Red
 
 Unsupported commands return: `ERR command not supported yet`.
 
-## Migration from Redis
-
-RESPLite is a good fit for migrating **non-replicated Redis** instances that have **grown large** (e.g. tens of GB) and where RESPLite’s latency is acceptable. The SPEC_F flow (dirty-key tracker, bulk import, cutover) is designed for that scenario with minimal downtime.
-
-Migration supports two modes:
-
-### Simple one-shot import (legacy)
-
-For small datasets or when downtime is acceptable:
-
-```bash
-# Default: redis://127.0.0.1:6379 → ./data.db
-npm run import-from-redis -- --db ./migrated.db
-
-# Custom Redis URL
-npm run import-from-redis -- --db ./migrated.db --redis-url redis://127.0.0.1:6379
-
-# Or host/port
-npm run import-from-redis -- --db ./migrated.db --host 127.0.0.1 --port 6379
-
-# Optional: PRAGMA template for the target DB
-npm run import-from-redis -- --db ./migrated.db --pragma-template performance
-```
-
-### Redis with authentication
-
-Migration supports Redis instances protected by a password. Use a Redis URL that includes the password (or username and password for Redis 6+ ACL):
-
-- **Password only:** `redis://:PASSWORD@host:port`
-- **Username and password:** `redis://username:PASSWORD@host:port`
-
-Examples:
-
-```bash
-# One-shot import from authenticated Redis
-npm run import-from-redis -- --db ./migrated.db --redis-url "redis://:mysecret@127.0.0.1:6379"
-
-# SPEC_F flow: use --from with the full URL (or set RESPLITE_IMPORT_FROM)
-npx resplite-import preflight --from "redis://:mysecret@10.0.0.10:6379" --to ./resplite.db
-npx resplite-dirty-tracker start --run-id run_001 --from "redis://:mysecret@10.0.0.10:6379" --to ./resplite.db
-```
-
-For one-shot import, authentication is only available when using `--redis-url`; the `--host` / `--port` options do not support a password.
-
-### Minimal-downtime migration (SPEC_F)
-
-For large datasets (~30 GB), use the Dirty Key Registry flow so the bulk of the migration runs online and only a short cutover is needed.
-
-**Enable keyspace notifications in Redis** (required for the dirty-key tracker). Either run at runtime:
-
-```bash
-redis-cli CONFIG SET notify-keyspace-events KEA
-```
-
-Or add to `redis.conf` and restart Redis:
-
-```
-notify-keyspace-events KEA
-```
-
-(`K` = keyspace prefix, `E` = keyevent prefix, `A` = all event types — lets the tracker see every key change and expiration.)
-
-> **Renamed CONFIG command?** Some Redis deployments rename `CONFIG` for security. Pass `--config-command <name>` to the CLI tools, or the `configCommand` option to the JS API — see below.
-
-1. **Preflight** – Check Redis, key count, type distribution, and that keyspace notifications are enabled:
-   ```bash
-   npx resplite-import preflight --from redis://10.0.0.10:6379 --to ./resplite.db
-   ```
-
-2. **Start dirty-key tracker** – Captures keys modified during bulk (requires `notify-keyspace-events` in Redis):
-   ```bash
-   npx resplite-dirty-tracker start --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db
-   # If CONFIG was renamed:
-   npx resplite-dirty-tracker start --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db --config-command MYCONFIG
-   ```
-
-3. **Bulk import** – SCAN and copy all keys; progress is checkpointed and resumable:
-   ```bash
-   npx resplite-import bulk --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db \
-     --scan-count 1000 --max-rps 2000 --batch-keys 200 --batch-bytes 64MB --resume
-   ```
-
-4. **Monitor** – Check run and dirty-key counts:
-   ```bash
-   npx resplite-import status --run-id run_001 --to ./resplite.db
-   ```
-
-5. **Cutover** – Freeze app writes to Redis, then apply remaining dirty keys:
-   ```bash
-   npx resplite-import apply-dirty --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db
-   ```
-
-6. **Stop tracker and switch** – Stop the tracker and point clients to RespLite:
-   ```bash
-   npx resplite-dirty-tracker stop --run-id run_001 --to ./resplite.db
-   ```
-
-7. **Verify** – Optional sampling check between Redis and destination:
-   ```bash
-   npx resplite-import verify --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db --sample 0.5%
-   ```
-
-Then start RespLite with the migrated DB: `RESPLITE_DB=./resplite.db npm start`.
-
-### Programmatic migration API
-
-As an alternative to the CLI, the full migration flow is available as a JavaScript API via `resplite/migration`. Useful for embedding the migration inside your own scripts or automation pipelines.
-
-```javascript
-import { createMigration } from 'resplite/migration';
-
-const m = createMigration({
-  from:  'redis://127.0.0.1:6379',  // source Redis URL (default)
-  to:    './resplite.db',           // destination SQLite DB path (required)
-  runId: 'my-migration-1',          // unique run ID (required for bulk/status/applyDirty)
-
-  // optional — same defaults as the CLI:
-  scanCount:      1000,
-  batchKeys:      200,
-  batchBytes:     64 * 1024 * 1024,  // 64 MB
-  maxRps:         0,                  // 0 = unlimited
-  pragmaTemplate: 'default',
-
-  // If your Redis deployment renamed CONFIG for security:
-  // configCommand: 'MYCONFIG',
-});
-
-// Step 0 — Preflight: inspect Redis before starting
-const info = await m.preflight();
-console.log('keys (estimate):', info.keyCountEstimate);
-console.log('type distribution:', info.typeDistribution);
-console.log('notify-keyspace-events:', info.notifyKeyspaceEvents);
-console.log('CONFIG available:', info.configCommandAvailable);  // false if renamed
-console.log('recommended params:', info.recommended);
-
-// Step 0b — Enable keyspace notifications (required for dirty-key tracking)
-// Reads the current value and merges the new flags — existing flags are preserved.
-const ks = await m.enableKeyspaceNotifications();
-// → { ok: true, previous: '', applied: 'KEA' }
-// If CONFIG is renamed and configCommand was not set, ok=false and error explains how to fix it.
-
-// Step 1 — Bulk import (checkpointed, resumable)
-await m.bulk({
-  resume: false,                            // true to resume a previous run
-  onProgress: (r) => console.log(
-    `scanned=${r.scanned_keys} migrated=${r.migrated_keys} errors=${r.error_keys}`
-  ),
-});
-
-// Check status at any point (synchronous, no Redis needed)
-const { run, dirty } = m.status();
-console.log('bulk status:', run.status, '— dirty counts:', dirty);
-
-// Step 2 — Apply dirty keys that changed in Redis during bulk
-await m.applyDirty();
-
-// Step 3 — Verify a sample of keys match between Redis and the destination
-const result = await m.verify({ samplePct: 0.5, maxSample: 10000 });
-console.log(`verified ${result.sampled} keys — mismatches: ${result.mismatches.length}`);
-
-// Disconnect Redis when done
-await m.close();
-```
-
-The dirty-key tracker (to capture writes during bulk) still runs as a separate process via `npx resplite-dirty-tracker`. The API above handles everything else in a single script.
-
-#### Renamed CONFIG command
-
-If your Redis instance has the `CONFIG` command renamed (a common hardening practice), pass the new name to `createMigration`:
-
-```javascript
-const m = createMigration({
-  from: 'redis://10.0.0.10:6379',
-  to:   './resplite.db',
-  runId: 'run_001',
-  configCommand: 'MYCONFIG',  // the renamed command
-});
-
-// preflight will use MYCONFIG GET notify-keyspace-events
-const info = await m.preflight();
-// info.configCommandAvailable → false if the name is wrong
-
-// enableKeyspaceNotifications will use MYCONFIG SET notify-keyspace-events KEA
-const result = await m.enableKeyspaceNotifications({ value: 'KEA' });
-```
-
-The same flag is available in the CLI:
-
-```bash
-npx resplite-dirty-tracker start --run-id run_001 --to ./resplite.db \
-  --from redis://10.0.0.10:6379 --config-command MYCONFIG
-```
-
-#### Low-level re-exports
-
-If you need more control, the individual functions and registry helpers are also exported:
-
-```javascript
-import {
-  runPreflight, runBulkImport, runApplyDirty, runVerify,
-  getRun, getDirtyCounts, createRun, setRunStatus, logError,
-} from 'resplite/migration';
-```
-
 ## Scripts
 
 | Script | Description |
@@ -599,7 +663,7 @@ import {
 | `npm run test:stress` | Stress tests |
 | `npm run benchmark` | Comparative benchmark Redis vs RESPLite |
 | `npm run import-from-redis` | One-shot import from Redis into a SQLite DB |
-| `npx resplite-import` (preflight, bulk, status, apply-dirty, verify) | Migration CLI (SPEC_F minimal-downtime flow) |
+| `npx resplite-import` (preflight, bulk, status, apply-dirty, verify) | Migration CLI (minimal-downtime flow) |
 | `npx resplite-dirty-tracker <start\|stop>` | Dirty-key tracker for migration cutover |
 
 ## Specification

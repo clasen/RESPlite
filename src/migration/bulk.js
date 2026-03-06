@@ -37,6 +37,9 @@ function sleep(ms) {
 
 /**
  * Run bulk import: SCAN keys from Redis, import into RespLite DB with checkpointing.
+ * On SIGINT/SIGTERM, checkpoint progress, set run status to ABORTED, close DB and rethrow.
+ * DB is always closed in a finally block (graceful shutdown when process is interrupted).
+ *
  * @param {import('redis').RedisClientType} redisClient
  * @param {string} dbPath
  * @param {string} runId
@@ -48,7 +51,7 @@ function sleep(ms) {
  * @param {number} [options.batch_keys=200]
  * @param {number} [options.batch_bytes=64*1024*1024] - 64MB
  * @param {number} [options.checkpoint_interval_sec=30]
- * @param {boolean} [options.resume=false]
+ * @param {boolean} [options.resume=true] - true: start from 0 or continue from checkpoint; false: always start from 0
  * @param {function(run): void} [options.onProgress] - called after checkpoint with run row
  */
 export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
@@ -60,46 +63,52 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
     batch_keys = 200,
     batch_bytes = 64 * 1024 * 1024,
     checkpoint_interval_sec = 30,
-    resume = false,
+    resume = true,
     onProgress,
   } = options;
 
   const db = openDb(dbPath, { pragmaTemplate });
-  const keys = createKeysStorage(db);
-  const strings = createStringsStorage(db, keys);
-  const hashes = createHashesStorage(db, keys);
-  const sets = createSetsStorage(db, keys);
-  const lists = createListsStorage(db, keys);
-  const zsets = createZsetsStorage(db, keys);
-  const storages = { keys, strings, hashes, sets, lists, zsets };
-
-  createRun(db, runId, sourceUri, { scan_count_hint: scan_count });
-  let run = getRun(db, runId);
-  if (!run) throw new Error(`Run ${runId} not found`);
-
-  let cursor = resume && run.scan_cursor !== undefined ? parseInt(String(run.scan_cursor), 10) : 0;
-  let scanned_keys = resume ? (run.scanned_keys || 0) : 0;
-  let migrated_keys = resume ? (run.migrated_keys || 0) : 0;
-  let skipped_keys = resume ? (run.skipped_keys || 0) : 0;
-  let error_keys = resume ? (run.error_keys || 0) : 0;
-  let migrated_bytes = resume ? (run.migrated_bytes || 0) : 0;
-
-  if (!resume) {
-    updateBulkProgress(db, runId, { scan_cursor: String(cursor), scanned_keys, migrated_keys, skipped_keys, error_keys, migrated_bytes });
-  }
-
-  let lastCheckpointTime = Date.now();
-  let batchScanned = 0;
-  let batchBytes = 0;
-  const minIntervalMs = max_rps > 0 ? 1000 / max_rps : 0;
-  let lastKeyTime = 0;
+  let abortRequested = false;
+  const onSignal = () => {
+    abortRequested = true;
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
 
   try {
-    do {
+    const keys = createKeysStorage(db);
+    const strings = createStringsStorage(db, keys);
+    const hashes = createHashesStorage(db, keys);
+    const sets = createSetsStorage(db, keys);
+    const lists = createListsStorage(db, keys);
+    const zsets = createZsetsStorage(db, keys);
+    const storages = { keys, strings, hashes, sets, lists, zsets };
+
+    createRun(db, runId, sourceUri, { scan_count_hint: scan_count });
+    let run = getRun(db, runId);
+    if (!run) throw new Error(`Run ${runId} not found`);
+
+    let cursor = resume && run.scan_cursor !== undefined ? parseInt(String(run.scan_cursor), 10) : 0;
+    let scanned_keys = resume ? (run.scanned_keys || 0) : 0;
+    let migrated_keys = resume ? (run.migrated_keys || 0) : 0;
+    let skipped_keys = resume ? (run.skipped_keys || 0) : 0;
+    let error_keys = resume ? (run.error_keys || 0) : 0;
+    let migrated_bytes = resume ? (run.migrated_bytes || 0) : 0;
+
+    if (!resume) {
+      updateBulkProgress(db, runId, { scan_cursor: String(cursor), scanned_keys, migrated_keys, skipped_keys, error_keys, migrated_bytes });
+    }
+
+    let lastCheckpointTime = Date.now();
+    let batchScanned = 0;
+    let batchBytes = 0;
+    const minIntervalMs = max_rps > 0 ? 1000 / max_rps : 0;
+    let lastKeyTime = 0;
+
+    outer: do {
       run = getRun(db, runId);
-      if (run && run.status === RUN_STATUS.ABORTED) {
-        break;
-      }
+      if (run && run.status === RUN_STATUS.ABORTED) break;
+      if (abortRequested) break;
       while (run && run.status === RUN_STATUS.PAUSED) {
         await sleep(2000);
         run = getRun(db, runId);
@@ -111,8 +120,9 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
       const keyList = parsed.keys || [];
 
       for (const keyName of keyList) {
+        if (abortRequested) break outer;
         run = getRun(db, runId);
-        if (run && run.status === RUN_STATUS.ABORTED) break;
+        if (run && run.status === RUN_STATUS.ABORTED) break outer;
         while (run && run.status === RUN_STATUS.PAUSED) {
           await sleep(2000);
           run = getRun(db, runId);
@@ -162,6 +172,23 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
       }
     } while (cursor !== 0);
 
+    if (abortRequested) {
+      updateBulkProgress(db, runId, {
+        scan_cursor: String(cursor),
+        scanned_keys,
+        migrated_keys,
+        skipped_keys,
+        error_keys,
+        migrated_bytes,
+      });
+      setRunStatus(db, runId, RUN_STATUS.ABORTED);
+      run = getRun(db, runId);
+      if (onProgress && run) onProgress(run);
+      const err = new Error('Bulk import interrupted by signal (SIGINT/SIGTERM)');
+      err.code = 'BULK_ABORTED';
+      throw err;
+    }
+
     updateBulkProgress(db, runId, {
       scan_cursor: '0',
       scanned_keys,
@@ -173,9 +200,15 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
     setRunStatus(db, runId, RUN_STATUS.COMPLETED);
     return getRun(db, runId);
   } catch (err) {
-    setRunStatus(db, runId, RUN_STATUS.FAILED);
-    updateBulkProgress(db, runId, { last_error: err.message });
-    logError(db, runId, 'bulk', err.message, null);
+    if (err.code !== 'BULK_ABORTED') {
+      setRunStatus(db, runId, RUN_STATUS.FAILED);
+      updateBulkProgress(db, runId, { last_error: err.message });
+      logError(db, runId, 'bulk', err.message, null);
+    }
     throw err;
+  } finally {
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+    db.close();
   }
 }
