@@ -1,4 +1,6 @@
-# Appendix E: Blocking Commands Specification (vNext)
+# RESPLite — Blocking Commands Specification (vNext)
+
+Originally Appendix E. BLPOP/BRPOP semantics, wait model, wakeup, tests.
 
 ## E.1 Goals
 

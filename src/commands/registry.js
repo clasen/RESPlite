@@ -9,8 +9,10 @@ import * as quit from './quit.js';
 import * as get from './get.js';
 import * as set from './set.js';
 import * as del from './del.js';
+import * as unlink from './unlink.js';
 import * as exists from './exists.js';
 import * as type from './type.js';
+import * as object from './object.js';
 import * as mget from './mget.js';
 import * as mset from './mset.js';
 import * as expire from './expire.js';
@@ -53,6 +55,10 @@ import * as zcard from './zcard.js';
 import * as zscore from './zscore.js';
 import * as zrange from './zrange.js';
 import * as zrangebyscore from './zrangebyscore.js';
+import * as zrevrange from './zrevrange.js';
+import * as zrevrangebyscore from './zrevrangebyscore.js';
+import * as zrevrank from './zrevrank.js';
+import * as zrank from './zrank.js';
 import * as sqliteInfo from './sqlite-info.js';
 import * as cacheInfo from './cache-info.js';
 import * as memoryInfo from './memory-info.js';
@@ -65,6 +71,7 @@ import * as ftSugadd from './ft-sugadd.js';
 import * as ftSugget from './ft-sugget.js';
 import * as ftSugdel from './ft-sugdel.js';
 import * as monitor from './monitor.js';
+import * as client from './client.js';
 
 const HANDLERS = new Map([
   ['PING', (e, a) => ping.handlePing()],
@@ -73,8 +80,10 @@ const HANDLERS = new Map([
   ['GET', (e, a) => get.handleGet(e, a)],
   ['SET', (e, a) => set.handleSet(e, a)],
   ['DEL', (e, a) => del.handleDel(e, a)],
+  ['UNLINK', (e, a) => unlink.handleUnlink(e, a)],
   ['EXISTS', (e, a) => exists.handleExists(e, a)],
   ['TYPE', (e, a) => type.handleType(e, a)],
+  ['OBJECT', (e, a) => object.handleObject(e, a)],
   ['MGET', (e, a) => mget.handleMget(e, a)],
   ['MSET', (e, a) => mset.handleMset(e, a)],
   ['EXPIRE', (e, a) => expire.handleExpire(e, a)],
@@ -117,6 +126,10 @@ const HANDLERS = new Map([
   ['ZSCORE', (e, a) => zscore.handleZscore(e, a)],
   ['ZRANGE', (e, a) => zrange.handleZrange(e, a)],
   ['ZRANGEBYSCORE', (e, a) => zrangebyscore.handleZrangebyscore(e, a)],
+  ['ZREVRANGE', (e, a) => zrevrange.handleZrevrange(e, a)],
+  ['ZREVRANGEBYSCORE', (e, a) => zrevrangebyscore.handleZrevrangebyscore(e, a)],
+  ['ZREVRANK', (e, a) => zrevrank.handleZrevrank(e, a)],
+  ['ZRANK', (e, a) => zrank.handleZrank(e, a)],
   ['SQLITE.INFO', (e, a) => sqliteInfo.handleSqliteInfo(e, a)],
   ['CACHE.INFO', (e, a) => cacheInfo.handleCacheInfo(e, a)],
   ['MEMORY.INFO', (e, a) => memoryInfo.handleMemoryInfo(e, a)],
@@ -129,6 +142,7 @@ const HANDLERS = new Map([
   ['FT.SUGGET', (e, a) => ftSugget.handleFtSugget(e, a)],
   ['FT.SUGDEL', (e, a) => ftSugdel.handleFtSugdel(e, a)],
   ['MONITOR', (e, a, ctx) => monitor.handleMonitor(a, ctx)],
+  ['CLIENT', (e, a, ctx) => client.handleClient(e, a, ctx)],
 ]);
 
 /**

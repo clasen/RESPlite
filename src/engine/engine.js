@@ -387,6 +387,30 @@ export function createEngine(opts = {}) {
       return zsets.rangeByRank(k, start, stop, { withScores: options.withScores });
     },
 
+    zrevrange(key, start, stop, options = {}) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return [];
+      expectZset(meta);
+      return zsets.rangeByRankReverse(k, start, stop, { withScores: options.withScores });
+    },
+
+    zrevrank(key, member) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return null;
+      expectZset(meta);
+      return zsets.rankReverse(k, asKey(member));
+    },
+
+    zrank(key, member) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return null;
+      expectZset(meta);
+      return zsets.rank(k, asKey(member));
+    },
+
     zrangebyscore(key, min, max, options = {}) {
       const k = asKey(key);
       const meta = getKeyMeta(key);
@@ -399,9 +423,32 @@ export function createEngine(opts = {}) {
       });
     },
 
+    zrevrangebyscore(key, max, min, options = {}) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return [];
+      expectZset(meta);
+      return zsets.rangeByScoreReverse(k, max, min, {
+        withScores: options.withScores,
+        offset: options.offset ?? 0,
+        limit: options.limit,
+      });
+    },
+
     type(key) {
       const meta = getKeyMeta(key);
       return typeName(meta);
+    },
+
+    /**
+     * OBJECT IDLETIME: seconds since key was last written (updated_at).
+     * Returns null if key does not exist (Redis: nil).
+     */
+    objectIdletime(key) {
+      const meta = getKeyMeta(key);
+      if (!meta || meta.updatedAt == null) return null;
+      const elapsedMs = clock() - meta.updatedAt;
+      return Math.floor(elapsedMs / 1000);
     },
 
     scan(cursor, options = {}) {

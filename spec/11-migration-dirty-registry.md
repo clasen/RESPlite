@@ -1,4 +1,6 @@
-# Appendix F: Migration with Dirty Key Registry (Keyspace Notifications)
+# RESPLite — Migration with Dirty Key Registry (Keyspace Notifications)
+
+Originally Appendix F. Bulk import, dirty key tracker, delta apply, search index migration.
 
 ## F.1 Goals
 
@@ -13,7 +15,7 @@
 * Perfect change-data-capture guarantees equivalent to replication logs.
 * Distributed migration across multiple import workers with strict ordering semantics.
 * Full fidelity for unsupported Redis data types (streams, modules, Lua scripts, etc.).
-* **Search indices (FT.\*):** Keyspace migration (`bulk` / `apply-dirty`) copies only the Redis KV data (strings, hashes, sets, lists, zsets). RediSearch index schemas and documents are migrated separately via the `migrate-search` step (§F.10).
+* **Search indices (FT.\*):** Keyspace migration (`bulk` / `apply-dirty`) copies only the Redis KV data (strings, hashes, sets, lists, zsets). RediSearch index schemas and documents are migrated separately via the `migrate-search` step (§F.12).
 
 ---
 
@@ -71,7 +73,7 @@ A practical baseline is:
   * `z` (zset)
   * `t` (set)
 
-If you need the broadest coverage, use “all” (often `AKE`-style in some docs), but configuration specifics vary by Redis version and operational policy. The migration tool should:
+If you need the broadest coverage, use "all" (often `AKE`-style in some docs), but configuration specifics vary by Redis version and operational policy. The migration tool should:
 
 * detect whether notifications are enabled
 * refuse or warn if they are not enabled
@@ -198,7 +200,7 @@ If only keyspace notifications are available, you will receive:
 * channel includes the key, payload includes the event
   You must support both, but keyevent is simpler.
 
-## F.6.2 Events to treat as “dirty”
+## F.6.2 Events to treat as "dirty"
 
 Mark key as dirty when you see any of:
 
@@ -209,7 +211,7 @@ Mark key as dirty when you see any of:
 * `zadd`, `zrem`, etc.
 * `expire`, `pexpire`, `persist` (TTL changes)
 
-## F.6.3 Events to treat as “deleted”
+## F.6.3 Events to treat as "deleted"
 
 Mark key as deleted when you see:
 
@@ -225,7 +227,7 @@ Keyspace notifications are not a guaranteed durable log:
 * if the tracker disconnects, events can be missed
   Mitigation:
 * treat the final cutover delta as authoritative with the application frozen
-* optionally run one short SCAN after freeze as a “safety sweep” if you want extra assurance
+* optionally run one short SCAN after freeze as a "safety sweep" if you want extra assurance
 
 ---
 
@@ -286,7 +288,7 @@ The importer must support:
 ## F.8.1 When to run delta
 
 * During cutover window, with application writes frozen.
-* Optional: run a “pre-delta” while still live to reduce final delta size.
+* Optional: run a "pre-delta" while still live to reduce final delta size.
 
 ## F.8.2 Delta algorithm
 
@@ -446,24 +448,24 @@ If dirty tracker disconnects:
 
 ---
 
-# F.10 Search Index Migration (FT.* / RediSearch)
+# F.12 Search Index Migration (FT.* / RediSearch)
 
-## F.10.1 Overview
+## F.12.1 Overview
 
 When the source is a Redis instance with **RediSearch** (Redis Stack or the `redis/search` module), search indices can be migrated with the `migrate-search` step. This step is independent of the KV bulk import and can be run at any time (before or after `bulk`).
 
-## F.10.2 Algorithm
+## F.12.2 Algorithm
 
 For each index in the source:
 
 1. **`FT._LIST`** → enumerate all index names.
 2. **`FT.INFO <name>`** → read `index_definition` (key type, prefix patterns) and `attributes` (field names and types).
-3. **Schema mapping** (see §F.10.3).
+3. **Schema mapping** (see §F.12.3).
 4. **`FT.CREATE`** in RespLite with the mapped schema. Skip if already exists (controlled by `skipExisting`).
 5. **SCAN** keys matching each index prefix → **HGETALL** → `addDocument` in SQLite batches.
 6. **`FT.SUGGET "" MAX n WITHSCORES`** → import suggestions into RespLite.
 
-## F.10.3 Field type mapping
+## F.12.3 Field type mapping
 
 | RediSearch type | RespLite type | Notes |
 |-----------------|---------------|-------|
@@ -474,18 +476,18 @@ For each index in the source:
 
 RespLite requires a `payload` TEXT field. If none of the source fields maps to `payload`, a `payload` field is added automatically and synthesised at import time by concatenating all other text values.
 
-## F.10.4 Constraints
+## F.12.4 Constraints
 
 * Only **HASH**-based indices are supported (`key_type = HASH`). JSON indices (RedisJSON) are skipped with an error.
 * Index names must match `[A-Za-z][A-Za-z0-9:_-]{0,63}`. Indices with invalid names are skipped with an error.
 * `FT.SUGGET` has no cursor; suggestions are imported up to `maxSuggestions` (default 10 000).
 * Document score is read from the `__score` or `score` hash field if present; defaults to `1.0`.
 
-## F.10.5 Graceful shutdown
+## F.12.5 Graceful shutdown
 
 Same pattern as `bulk` (§F.7.2.1): SIGINT/SIGTERM finishes the current document, closes the SQLite DB cleanly, and exits with a non-zero code.
 
-## F.10.6 Programmatic API
+## F.12.6 Programmatic API
 
 ```javascript
 const m = createMigration({ from, to, runId });
@@ -503,7 +505,7 @@ const result = await m.migrateSearch({
 
 ---
 
-# F.12 Operational Guidance (Large datasets)
+# F.13 Operational Guidance (Large datasets)
 
 * Use a dedicated Redis replica for reads if possible to reduce load on primary.
 * Keep `max_concurrency` conservative at first; increase only if Redis latency remains stable.

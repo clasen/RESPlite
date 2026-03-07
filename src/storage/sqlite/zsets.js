@@ -36,10 +36,30 @@ export function createZsetsStorage(db, keys) {
      ORDER BY score ASC, member ASC
      LIMIT ? OFFSET ?`
   );
+  const rangeByRankReverseStmt = db.prepare(
+    `SELECT member, score FROM redis_zsets
+     WHERE key = ?
+     ORDER BY score DESC, member DESC
+     LIMIT ? OFFSET ?`
+  );
   const rangeByScoreStmt = db.prepare(
     `SELECT member, score FROM redis_zsets
      WHERE key = ? AND score >= ? AND score <= ?
      ORDER BY score ASC, member ASC
+     LIMIT ? OFFSET ?`
+  );
+  const rankReverseStmt = db.prepare(
+    `SELECT COUNT(*) AS n FROM redis_zsets
+     WHERE key = ? AND (score > ? OR (score = ? AND member > ?))`
+  );
+  const rankStmt = db.prepare(
+    `SELECT COUNT(*) AS n FROM redis_zsets
+     WHERE key = ? AND (score < ? OR (score = ? AND member < ?))`
+  );
+  const rangeByScoreReverseStmt = db.prepare(
+    `SELECT member, score FROM redis_zsets
+     WHERE key = ? AND score <= ? AND score >= ?
+     ORDER BY score DESC, member DESC
      LIMIT ? OFFSET ?`
   );
 
@@ -144,6 +164,34 @@ export function createZsetsStorage(db, keys) {
     },
 
     /**
+     * Range by rank in reverse order (ZREVRANGE). Rank 0 = highest score.
+     * Same start/stop semantics as rangeByRank; order is score DESC, member DESC.
+     * @param {Buffer} key
+     * @param {number} start 0-based inclusive (0 = highest score)
+     * @param {number} stop 0-based inclusive
+     * @param {{ withScores?: boolean }} options
+     * @returns {Buffer[] | Array<Buffer|string>} members or [member, score, ...]
+     */
+    rangeByRankReverse(key, start, stop, options = {}) {
+      const len = this.count(key);
+      if (len === 0) return [];
+      let s = start >= 0 ? start : Math.max(0, len + start);
+      let e = stop >= 0 ? stop : Math.max(0, len + stop);
+      if (s > e) return [];
+      s = Math.min(s, len - 1);
+      e = Math.min(e, len - 1);
+      const limit = e - s + 1;
+      const offset = s;
+      const rows = rangeByRankReverseStmt.all(key, limit, offset);
+      if (!options.withScores) return rows.map((r) => r.member);
+      const out = [];
+      for (const r of rows) {
+        out.push(r.member, formatScore(r.score));
+      }
+      return out;
+    },
+
+    /**
      * Range by score (min/max inclusive). Order: score ASC, member ASC.
      * @param {Buffer} key
      * @param {number} min
@@ -154,6 +202,53 @@ export function createZsetsStorage(db, keys) {
       const limit = options.limit ?? -1;
       const offset = options.offset ?? 0;
       const rows = rangeByScoreStmt.all(key, min, max, limit < 0 ? 1e9 : limit, offset);
+      if (!options.withScores) return rows.map((r) => r.member);
+      const out = [];
+      for (const r of rows) {
+        out.push(r.member, formatScore(r.score));
+      }
+      return out;
+    },
+
+    /**
+     * Rank of member in reverse order (ZREVRANK). Rank 0 = highest score.
+     * Returns null if key does not exist or member not in set.
+     * @param {Buffer} key
+     * @param {Buffer} member
+     * @returns {number | null} 0-based rank or null
+     */
+    rankReverse(key, member) {
+      const scoreRow = scoreStmt.get(key, member);
+      if (scoreRow == null) return null;
+      const row = rankReverseStmt.get(key, scoreRow.score, scoreRow.score, member);
+      return row ? row.n : 0;
+    },
+
+    /**
+     * Rank of member in ascending order (ZRANK). Rank 0 = lowest score.
+     * Returns null if key does not exist or member not in set.
+     * @param {Buffer} key
+     * @param {Buffer} member
+     * @returns {number | null} 0-based rank or null
+     */
+    rank(key, member) {
+      const scoreRow = scoreStmt.get(key, member);
+      if (scoreRow == null) return null;
+      const row = rankStmt.get(key, scoreRow.score, scoreRow.score, member);
+      return row ? row.n : 0;
+    },
+
+    /**
+     * Range by score in reverse order (ZREVRANGEBYSCORE). max/min inclusive, order score DESC, member DESC.
+     * @param {Buffer} key
+     * @param {number} max
+     * @param {number} min
+     * @param {{ withScores?: boolean, limit?: number, offset?: number }} options
+     */
+    rangeByScoreReverse(key, max, min, options = {}) {
+      const limit = options.limit ?? -1;
+      const offset = options.offset ?? 0;
+      const rows = rangeByScoreReverseStmt.all(key, max, min, limit < 0 ? 1e9 : limit, offset);
       if (!options.withScores) return rows.map((r) => r.member);
       const out = [];
       for (const r of rows) {

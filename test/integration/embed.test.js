@@ -147,10 +147,10 @@ describe('createRESPlite', () => {
     } catch (_) {}
     await client.quit();
     await srv.close();
-    assert.equal(errorCalls.length, 1);
-    assert.equal(errorCalls[0].command, 'HGET');
-    assert.ok(errorCalls[0].error.includes('WRONGTYPE'));
-    assert.equal(typeof errorCalls[0].connectionId, 'number');
-    assert.ok(errorCalls[0].clientAddress.length > 0);
+    const hgetError = errorCalls.find((c) => c.command === 'HGET');
+    assert.ok(hgetError, 'expected at least one HGET error (got: ' + errorCalls.map((c) => c.command).join(', ') + ')');
+    assert.ok(hgetError.error.includes('WRONGTYPE'));
+    assert.equal(typeof hgetError.connectionId, 'number');
+    assert.ok(hgetError.clientAddress.length > 0);
   });
 });

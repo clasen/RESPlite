@@ -258,6 +258,34 @@ async function benchZaddZrange(client, n) {
   }
 }
 
+async function benchZaddZrevrange(client, n) {
+  const key = 'bm:zset:rev';
+  for (let i = 0; i < n; i++) {
+    await client.zAdd(key, { score: i, value: `m${i}` });
+    if (i % 10 === 0) await client.zRange(key, 0, 49, { REV: true });
+  }
+}
+
+async function benchZrankZrevrank(client, n) {
+  const key = 'bm:zset:rank';
+  await client.del(key);
+  await client.zAdd(key, Array.from({ length: 100 }, (_, i) => ({ score: i, value: `m${i}` })));
+  for (let i = 0; i < n; i++) {
+    const member = `m${i % 100}`;
+    await client.zRank(key, member);
+    await client.zRevRank(key, member);
+  }
+}
+
+async function benchZrevrangebyscore(client, n) {
+  const key = 'bm:zset:byscore';
+  await client.del(key);
+  await client.zAdd(key, Array.from({ length: 100 }, (_, i) => ({ score: i, value: `m${i}` })));
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['ZREVRANGEBYSCORE', key, '99', '0', 'LIMIT', '0', '20']);
+  }
+}
+
 async function benchDel(client, n) {
   for (let i = 0; i < n; i++) {
     await client.set(`bm:del:${i}`, 'x');
@@ -311,6 +339,9 @@ const SUITES = [
   { name: 'LPUSH+LRANGE', fn: benchLpushLrange, iterScale: 1 },
   { name: 'LREM', fn: benchLrem, iterScale: 1 },
   { name: 'ZADD+ZRANGE', fn: benchZaddZrange, iterScale: 1 },
+  { name: 'ZADD+ZREVRANGE', fn: benchZaddZrevrange, iterScale: 1 },
+  { name: 'ZRANK+ZREVRANK', fn: benchZrankZrevrank, iterScale: 1 },
+  { name: 'ZREVRANGEBYSCORE', fn: benchZrevrangebyscore, iterScale: 1 },
   { name: 'SET+DEL', fn: benchDel, iterScale: 1 },
   { name: 'FT.SEARCH', fn: benchFtSearch, iterScale: 1 },
 ];

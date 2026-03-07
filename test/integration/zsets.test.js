@@ -51,6 +51,74 @@ describe('ZSET integration', () => {
     assert.equal(arr[3].toString('utf8'), '2');
   });
 
+  it('ZREVRANGE returns order highest to lowest and supports WITHSCORES', async () => {
+    await sendCommand(port, argv('ZADD', 'zrev', '1', 'a', '2', 'b', '3', 'c'));
+    const rev = await sendCommand(port, argv('ZREVRANGE', 'zrev', '0', '-1'));
+    const arr = tryParseValue(rev, 0).value;
+    assert.equal(arr.length, 3);
+    assert.equal(arr[0].toString('utf8'), 'c');
+    assert.equal(arr[1].toString('utf8'), 'b');
+    assert.equal(arr[2].toString('utf8'), 'a');
+
+    const withScores = await sendCommand(port, argv('ZREVRANGE', 'zrev', '0', '30', 'WITHSCORES'));
+    const withArr = tryParseValue(withScores, 0).value;
+    assert.equal(withArr.length, 6);
+    assert.equal(withArr[0].toString('utf8'), 'c');
+    assert.equal(withArr[1].toString('utf8'), '3');
+    assert.equal(withArr[2].toString('utf8'), 'b');
+    assert.equal(withArr[3].toString('utf8'), '2');
+  });
+
+  it('ZREVRANK returns 0-based rank high-to-low and nil when missing', async () => {
+    await sendCommand(port, argv('ZADD', 'zrevrank', '1', 'a', '2', 'b', '3', 'c'));
+    const rankC = await sendCommand(port, argv('ZREVRANK', 'zrevrank', 'c'));
+    assert.equal(tryParseValue(rankC, 0).value, 0);
+    const rankB = await sendCommand(port, argv('ZREVRANK', 'zrevrank', 'b'));
+    assert.equal(tryParseValue(rankB, 0).value, 1);
+    const rankA = await sendCommand(port, argv('ZREVRANK', 'zrevrank', 'a'));
+    assert.equal(tryParseValue(rankA, 0).value, 2);
+
+    const noMember = await sendCommand(port, argv('ZREVRANK', 'zrevrank', 'x'));
+    assert.ok(noMember.toString('ascii').startsWith('$-1'));
+    const noKey = await sendCommand(port, argv('ZREVRANK', 'nokey', 'a'));
+    assert.ok(noKey.toString('ascii').startsWith('$-1'));
+  });
+
+  it('ZRANK returns 0-based rank low-to-high and nil when missing', async () => {
+    await sendCommand(port, argv('ZADD', 'zrank', '1', 'a', '2', 'b', '3', 'c'));
+    const rankA = await sendCommand(port, argv('ZRANK', 'zrank', 'a'));
+    assert.equal(tryParseValue(rankA, 0).value, 0);
+    const rankB = await sendCommand(port, argv('ZRANK', 'zrank', 'b'));
+    assert.equal(tryParseValue(rankB, 0).value, 1);
+    const rankC = await sendCommand(port, argv('ZRANK', 'zrank', 'c'));
+    assert.equal(tryParseValue(rankC, 0).value, 2);
+
+    const noMember = await sendCommand(port, argv('ZRANK', 'zrank', 'x'));
+    assert.ok(noMember.toString('ascii').startsWith('$-1'));
+  });
+
+  it('ZREVRANGEBYSCORE returns score range high-to-low and supports WITHSCORES and LIMIT', async () => {
+    await sendCommand(port, argv('ZADD', 'zrevscore', '1', 'a', '2', 'b', '3', 'c', '4', 'd'));
+    const rev = await sendCommand(port, argv('ZREVRANGEBYSCORE', 'zrevscore', '4', '2'));
+    const arr = tryParseValue(rev, 0).value;
+    assert.equal(arr.length, 3);
+    assert.equal(arr[0].toString('utf8'), 'd');
+    assert.equal(arr[1].toString('utf8'), 'c');
+    assert.equal(arr[2].toString('utf8'), 'b');
+
+    const withScores = await sendCommand(port, argv('ZREVRANGEBYSCORE', 'zrevscore', '10', '0', 'WITHSCORES'));
+    const withArr = tryParseValue(withScores, 0).value;
+    assert.equal(withArr.length, 8);
+    assert.equal(withArr[0].toString('utf8'), 'd');
+    assert.equal(withArr[1].toString('utf8'), '4');
+
+    const limitReply = await sendCommand(port, argv('ZREVRANGEBYSCORE', 'zrevscore', '10', '0', 'LIMIT', '1', '2'));
+    const limited = tryParseValue(limitReply, 0).value;
+    assert.equal(limited.length, 2);
+    assert.equal(limited[0].toString('utf8'), 'c');
+    assert.equal(limited[1].toString('utf8'), 'b');
+  });
+
   it('ZRANGE negative indices and start > stop', async () => {
     await sendCommand(port, argv('ZADD', 'z4', '1', 'a', '2', 'b', '3', 'c'));
     const last = await sendCommand(port, argv('ZRANGE', 'z4', '-1', '-1'));

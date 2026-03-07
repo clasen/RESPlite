@@ -1,4 +1,6 @@
-# Appendix D: Search (FT.*) Specification
+# RESPLite — Search (FT.*) Specification
+
+Originally Appendix D. Goals, data model, FT.CREATE/ADD/DEL/SEARCH/SUG* behavior, SQL templates, parser grammar.
 
 ## D.1 Goals
 

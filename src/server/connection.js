@@ -21,6 +21,7 @@ export function handleConnection(socket, engine, hooks = {}) {
   const context = {
     connectionId,
     clientAddress,
+    connectionName: null,
     monitorMode: false,
     writeResponse(buf) {
       if (socket.writable) socket.write(buf);

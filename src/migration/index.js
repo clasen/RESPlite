@@ -13,7 +13,7 @@
  *   const info   = await m.preflight();
  *   await m.bulk({ onProgress: console.log });
  *   const status = m.status();
- *   await m.applyDirty();
+ *   await m.applyDirty({ onProgress: console.log });
  *   const result = await m.verify();
  *   await m.close();
  */
@@ -52,7 +52,7 @@ import { startDirtyTracker as startDirtyTrackerProcess } from './tracker.js';
  *   stopDirtyTracker(): Promise<{ running: false }>,
  *   bulk(opts?: { resume?: boolean, onProgress?: function }): Promise<object>,
  *   status(): { run: object, dirty: object } | null,
- *   applyDirty(opts?: { batchKeys?: number, maxRps?: number }): Promise<object>,
+ *   applyDirty(opts?: { batchKeys?: number, maxRps?: number, onProgress?: function }): Promise<object>,
  *   verify(opts?: { samplePct?: number, maxSample?: number }): Promise<object>,
  *   migrateSearch(opts?: { onlyIndices?: string[], scanCount?: number, maxRps?: number, batchDocs?: number, maxSuggestions?: number, skipExisting?: boolean, withSuggestions?: boolean, onProgress?: function }): Promise<object>,
  *   close(): Promise<void>,
@@ -191,15 +191,16 @@ export function createMigration({
     /**
      * Step 3 — Apply dirty: reconcile keys that changed in Redis during bulk import.
      *
-     * @param {{ batchKeys?: number, maxRps?: number }} [opts]
+     * @param {{ batchKeys?: number, maxRps?: number, onProgress?: (run: object) => void }} [opts]
      */
-    async applyDirty({ batchKeys: bk = batchKeys, maxRps: rps = maxRps } = {}) {
+    async applyDirty({ batchKeys: bk = batchKeys, maxRps: rps = maxRps, onProgress } = {}) {
       const id = requireRunId();
       const client = await getClient();
       return runApplyDirty(client, to, id, {
         pragmaTemplate,
         batch_keys: bk,
         max_rps: rps,
+        onProgress,
       });
     },
 

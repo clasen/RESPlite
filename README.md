@@ -158,7 +158,7 @@ await rl.question('Stop app traffic to Redis, then press Enter to apply the fina
 rl.close();
 
 // Step 3 — Apply dirty keys that changed in Redis during bulk
-await m.applyDirty();
+await m.applyDirty({ onProgress: console.log });
 
 // Step 3b — Stop tracker after cutover
 await m.stopDirtyTracker();
@@ -515,21 +515,24 @@ A typical comparison is **Redis (for example, in Docker)** on one side and **RES
 
 **Example results (Redis vs RESPLite, default pragma, 10k iterations):**
 
-| Suite           | Redis (Docker) | RESPLite (default) |
-|-----------------|----------------|--------------------|
-| PING            | 8.79K/s        | 37.36K/s           |
-| SET+GET         | 4.68K/s        | 11.96K/s           |
-| MSET+MGET(10)   | 4.41K/s        | 5.81K/s            |
-| INCR            | 9.54K/s        | 18.97K/s           |
-| HSET+HGET       | 4.40K/s        | 11.91K/s           |
-| HGETALL(50)     | 8.39K/s        | 11.01K/s           |
-| HLEN(50)        | 9.36K/s        | 31.21K/s           |
-| SADD+SMEMBERS   | 9.27K/s        | 17.37K/s           |
-| LPUSH+LRANGE    | 8.34K/s        | 14.27K/s           |
-| LREM            | 4.37K/s        | 6.08K/s            |
-| ZADD+ZRANGE     | 7.80K/s        | 17.12K/s           |
-| SET+DEL         | 4.39K/s        | 9.57K/s            |
-| FT.SEARCH       | 8.36K/s        | 8.22K/s            |
+| Suite             | Redis (Docker) | RESPLite (default) |
+|-------------------|----------------|--------------------|
+| PING              | 9.72K/s        | 37.66K/s           |
+| SET+GET           | 4.60K/s        | 11.96K/s           |
+| MSET+MGET(10)     | 4.38K/s        | 5.71K/s            |
+| INCR              | 9.76K/s        | 19.15K/s           |
+| HSET+HGET         | 4.42K/s        | 11.71K/s           |
+| HGETALL(50)       | 8.42K/s        | 11.12K/s           |
+| HLEN(50)          | 8.88K/s        | 30.72K/s           |
+| SADD+SMEMBERS     | 8.33K/s        | 18.19K/s           |
+| LPUSH+LRANGE      | 8.29K/s        | 14.78K/s           |
+| LREM              | 4.85K/s        | 6.35K/s            |
+| ZADD+ZRANGE       | 9.37K/s        | 16.43K/s           |
+| ZADD+ZREVRANGE    | 8.22K/s        | 16.82K/s           |
+| ZRANK+ZREVRANK    | 4.56K/s        | 13.03K/s           |
+| ZREVRANGEBYSCORE  | 8.88K/s        | 16.88K/s           |
+| SET+DEL           | 4.75K/s        | 9.99K/s            |
+| FT.SEARCH         | 8.39K/s        | 8.81K/s            |
 
 To reproduce the benchmark, run `npm run benchmark -- --template default`. Numbers depend on host and whether Redis is native or in Docker.
 
@@ -545,9 +548,9 @@ To reproduce the benchmark, run `npm run benchmark -- --template default`. Numbe
 | **Hashes** | HSET, HGET, HMGET, HGETALL, HDEL, HEXISTS, HINCRBY |
 | **Sets** | SADD, SREM, SMEMBERS, SISMEMBER, SCARD |
 | **Lists** | LPUSH, RPUSH, LLEN, LRANGE, LINDEX, LPOP, RPOP, BLPOP, BRPOP |
-| **Sorted sets** | ZADD, ZREM, ZCARD, ZSCORE, ZRANGE, ZRANGEBYSCORE |
+| **Sorted sets** | ZADD, ZREM, ZCARD, ZSCORE, ZRANGE, ZREVRANGE, ZRANGEBYSCORE, ZREVRANGEBYSCORE, ZRANK, ZREVRANK |
 | **Search (FT.\*)** | FT.CREATE, FT.INFO, FT.ADD, FT.DEL, FT.SEARCH, FT.SUGADD, FT.SUGGET, FT.SUGDEL |
-| **Introspection** | TYPE, SCAN, KEYS, MONITOR |
+| **Introspection** | TYPE, OBJECT IDLETIME, SCAN, KEYS, MONITOR |
 | **Admin** | SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
 
 ### Not supported (v1)
@@ -572,7 +575,3 @@ Unsupported commands return: `ERR command not supported yet`.
 | `npm run test:contract` | Contract tests (redis client) |
 | `npm run test:stress` | Stress tests |
 | `npm run benchmark` | Comparative benchmark Redis vs RESPLite |
-
-## Specification
-
-See [SPEC.md](SPEC.md) for the full specification.

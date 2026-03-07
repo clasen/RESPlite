@@ -47,7 +47,6 @@ Favor the smallest compatibility increment that solves the user's request. RESPL
 
 Read these files before editing:
 
-- `spec/SPEC_A.md` for scope, positioning, binary-safety expectations, and command boundaries
 - `README.md` for the public compatibility matrix and examples
 - `src/commands/registry.js` for command dispatch and handler registration
 

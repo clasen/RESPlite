@@ -33,6 +33,17 @@ describe('Strings integration', () => {
     assert.equal(reply.toString('ascii'), ':1\r\n');
   });
 
+  it('UNLINK returns count like DEL', async () => {
+    await sendCommand(port, argv('SET', 'u1', 'a'));
+    await sendCommand(port, argv('SET', 'u2', 'b'));
+    const one = await sendCommand(port, argv('UNLINK', 'u1'));
+    assert.equal(one.toString('ascii'), ':1\r\n');
+    const two = await sendCommand(port, argv('UNLINK', 'u2', 'u3'));
+    assert.equal(two.toString('ascii'), ':1\r\n');
+    const zero = await sendCommand(port, argv('UNLINK', 'u1'));
+    assert.equal(zero.toString('ascii'), ':0\r\n');
+  });
+
   it('EXISTS returns count', async () => {
     await sendCommand(port, argv('SET', 'ex1', 'a'));
     const r = await sendCommand(port, argv('EXISTS', 'ex1', 'ex2'));

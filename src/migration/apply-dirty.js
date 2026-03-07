@@ -25,9 +25,10 @@ function sleep(ms) {
  * @param {string} [options.pragmaTemplate='default']
  * @param {number} [options.batch_keys=200]
  * @param {number} [options.max_rps=0]
+ * @param {(run: object) => void | Promise<void>} [options.onProgress] - Called after each batch with the current run row.
  */
 export async function runApplyDirty(redisClient, dbPath, runId, options = {}) {
-  const { pragmaTemplate = 'default', batch_keys = 200, max_rps = 0 } = options;
+  const { pragmaTemplate = 'default', batch_keys = 200, max_rps = 0, onProgress } = options;
 
   const db = openDb(dbPath, { pragmaTemplate });
   const run = getRun(db, runId);
@@ -55,6 +56,8 @@ export async function runApplyDirty(redisClient, dbPath, runId, options = {}) {
     const dirtyBatch   = getDirtyBatch(db, runId, 'dirty',   batch_keys);
     const deletedBatch = getDirtyBatch(db, runId, 'deleted', batch_keys);
     if (dirtyBatch.length === 0 && deletedBatch.length === 0) break;
+
+    const batchSize = dirtyBatch.length + deletedBatch.length;
 
     // ── Re-import (or remove) keys that changed while bulk was running ──
     for (const { key: keyBuf } of dirtyBatch) {
@@ -121,6 +124,10 @@ export async function runApplyDirty(redisClient, dbPath, runId, options = {}) {
         logError(db, runId, 'dirty_apply', err.message, keyBuf);
         markDirtyState(db, runId, keyBuf, 'error');
       }
+    }
+    if (batchSize > 0 && onProgress) {
+      const run = getRun(db, runId);
+      if (run) Promise.resolve(onProgress(run)).catch(() => {});
     }
   }
 
