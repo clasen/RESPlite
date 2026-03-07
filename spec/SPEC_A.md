@@ -1070,7 +1070,7 @@ Introspection and observability:
 
 Migration tooling:
 
-- external Redis import CLI using `SCAN`
+- programmatic Redis migration API using `SCAN`
 - import verification and reporting
 
 ### Phase 9
@@ -1089,7 +1089,7 @@ Search should only begin after the core command, TTL, persistence, and concurren
 ## 26. Migration Strategy from Redis
 
 Migration is not part of the RESP protocol surface in v1.
-It should be implemented as an external CLI tool.
+It should be implemented as a programmatic module outside the RESP command surface.
 
 ### 26.1 Initial migration method
 
@@ -1104,7 +1104,7 @@ Recommended initial approach:
 
 ### 26.2 Initial migratable subset
 
-The initial import tool should support:
+The initial migration module should support:
 
 - strings
 - hashes
@@ -1134,7 +1134,7 @@ All commands implemented in v1.
 
 Future near-term commands such as:
 
-- Redis import CLI
+- programmatic Redis migration API
 - `FT.CREATE`
 - `FT.SEARCH`
 - `FT.INFO`

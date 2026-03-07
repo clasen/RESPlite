@@ -100,13 +100,17 @@ describe('dirty tracker integration', { timeout: 30_000 }, () => {
     const runId  = `tracker-test-${Date.now()}`;
 
     const m = createMigration({ from: REDIS_URL, to: dbPath, runId });
+    const progressEvents = [];
 
     const ks = await m.enableKeyspaceNotifications({ value: 'KEA' });
     assert.ok(ks.ok, `Failed to enable keyspace notifications: ${ks.error}`);
 
-    // ── Start tracker BEFORE bulk ────────────────────────────────────────
-    const tracker = await startDirtyTracker({ from: REDIS_URL, to: dbPath, runId });
-
+    // ── Start tracker BEFORE bulk (same-script API) ─────────────────────
+    await m.startDirtyTracker({
+      onProgress: (p) => {
+        progressEvents.push(p);
+      },
+    });
     try {
       // ── Bulk import (captures the initial snapshot) ──────────────────
       const run = await m.bulk();
@@ -121,7 +125,7 @@ describe('dirty tracker integration', { timeout: 30_000 }, () => {
       // Give the tracker time to process the keyspace events
       await new Promise((r) => setTimeout(r, 600));
     } finally {
-      await tracker.stop();
+      await m.stopDirtyTracker();
     }
 
     // ── Verify dirty keys were captured ─────────────────────────────────
@@ -130,6 +134,7 @@ describe('dirty tracker integration', { timeout: 30_000 }, () => {
       dirty.dirty + dirty.deleted >= 3,
       `Expected ≥3 dirty/deleted keys, got dirty=${dirty.dirty} deleted=${dirty.deleted}`
     );
+    assert.ok(progressEvents.length >= 3, `Expected tracker onProgress events, got ${progressEvents.length}`);
 
     // ── Apply-dirty: reconcile post-bulk changes ─────────────────────────
     const afterApply = await m.applyDirty();

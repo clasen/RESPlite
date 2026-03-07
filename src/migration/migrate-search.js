@@ -5,7 +5,7 @@
  *   1. FT._LIST  → enumerate index names
  *   2. FT.INFO   → read schema (prefix patterns, field attributes)
  *   3. Map RediSearch field types to RespLite TEXT fields
- *   4. FT.CREATE in RespLite (skip if already exists and skipExisting=true)
+ *   4. FT.CREATE in RespLite (or reuse the existing destination index when skipExisting=true)
  *   5. SCAN keys by prefix → HGETALL → addDocument in SQLite batches
  *   6. FT.SUGGET  → import suggestions
  *
@@ -199,6 +199,18 @@ function buildDocFields(hashData, fieldMap, schemaFields) {
 }
 
 /**
+ * Read document score from Redis hash fields.
+ * Prefers `__score`, then `score`, and falls back to `1.0`.
+ *
+ * @param {Record<string, string>} hashData
+ * @returns {number}
+ */
+function getDocScore(hashData) {
+  const rawScore = hashData['__score'] ?? hashData['score'];
+  return rawScore ? (parseFloat(rawScore) || 1.0) : 1.0;
+}
+
+/**
  * Import suggestions from a RediSearch index via FT.SUGGET "" MAX n WITHSCORES.
  * RediSearch has no cursor for FT.SUGGET; maxSuggestions caps the import.
  * Returns the number of suggestions imported.
@@ -249,7 +261,7 @@ async function importSuggestions(redisClient, db, indexName, maxSuggestions) {
  * @param {number}   [options.maxRps=0]             - Max Redis requests/s (0 = unlimited).
  * @param {number}   [options.batchDocs=200]        - Docs per SQLite transaction.
  * @param {number}   [options.maxSuggestions=10000] - Cap for FT.SUGGET import.
- * @param {boolean}  [options.skipExisting=true]    - Skip index if already in RespLite.
+ * @param {boolean}  [options.skipExisting=true]    - Reuse an existing destination index and skip FT.CREATE instead of failing.
  * @param {boolean}  [options.withSuggestions=true] - Also migrate suggestions.
  * @param {(result: IndexResult) => void} [options.onProgress]
  * @returns {Promise<{ indices: IndexResult[], aborted: boolean }>}
@@ -327,6 +339,7 @@ export async function runMigrateSearch(redisClient, dbPath, options = {}) {
         if (e.message.includes('already exists')) {
           if (skipExisting) {
             skipped = true;
+            warnings.push(`Index "${indexName}" already exists in destination; reusing existing schema`);
           } else {
             results.push({ ...errorResult(indexName, 'Index already exists in destination'), warnings });
             continue;
@@ -341,6 +354,7 @@ export async function runMigrateSearch(redisClient, dbPath, options = {}) {
       let docsImported = 0;
       let docsSkipped  = 0;
       let docErrors    = 0;
+      const seenKeys = new Set();
 
       // Batch infrastructure: accumulate HGETALL results, flush in SQLite transactions
       const pendingHashData = new Map();
@@ -351,8 +365,7 @@ export async function runMigrateSearch(redisClient, dbPath, options = {}) {
           const hashData = pendingHashData.get(key);
           if (!hashData) continue;
           const docFields = buildDocFields(hashData, fieldMap, fields);
-          const rawScore  = hashData['__score'] ?? hashData['score'];
-          const score     = rawScore ? (parseFloat(rawScore) || 1.0) : 1.0;
+          const score = getDocScore(hashData);
           addDocument(db, indexName, key, score, true, docFields);
         }
       });
@@ -369,7 +382,7 @@ export async function runMigrateSearch(redisClient, dbPath, options = {}) {
             try {
               const hd = pendingHashData.get(k);
               if (!hd) continue;
-              addDocument(db, indexName, k, 1.0, true, buildDocFields(hd, fieldMap, fields));
+              addDocument(db, indexName, k, getDocScore(hd), true, buildDocFields(hd, fieldMap, fields));
               docsImported++;
             } catch (_e) {
               docErrors++;
@@ -406,11 +419,17 @@ export async function runMigrateSearch(redisClient, dbPath, options = {}) {
               continue;
             }
 
+            if (seenKeys.has(key)) {
+              continue;
+            }
+
             if (!hashData || typeof hashData !== 'object' || Object.keys(hashData).length === 0) {
+              seenKeys.add(key);
               docsSkipped++;
               continue;
             }
 
+            seenKeys.add(key);
             pendingHashData.set(key, hashData);
             pendingKeys.push(key);
 
@@ -454,4 +473,4 @@ function errorResult(name, error) {
 }
 
 // ── Exported helpers (used by tests) ─────────────────────────────────────────
-export { mapFields, buildDocFields };
+export { mapFields, buildDocFields, getDocScore };

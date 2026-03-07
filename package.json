@@ -1,13 +1,9 @@
 {
   "name": "resplite",
-  "version": "1.2.4",
+  "version": "1.2.6",
   "description": "A RESP2 server with practical Redis compatibility, backed by SQLite",
   "type": "module",
   "main": "src/index.js",
-  "bin": {
-    "resplite-import": "src/cli/resplite-import.js",
-    "resplite-dirty-tracker": "src/cli/resplite-dirty-tracker.js"
-  },
   "exports": {
     ".": "./src/index.js",
     "./embed": "./src/embed.js",
@@ -15,7 +11,6 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "import-from-redis": "node src/cli/import-from-redis.js",
     "test": "node --test",
     "test:unit": "node --test 'test/unit/*.test.js'",
     "test:integration": "node --test 'test/integration/*.test.js'",

@@ -21,45 +21,19 @@ Building this project surfaced a clear finding: **Redis running inside Docker** 
 
 The strongest use case is **migrating a non-replicated Redis instance that has grown large** (tens of GB). You don't need to manage replicas, AOF, or RDB. Once migrated, you get a single SQLite file and latency that is good enough for most workloads. The built-in migration tooling (see [Migration from Redis](#migration-from-redis)) handles datasets of that size with minimal downtime.
 
-## Benchmark (Redis vs RESPLite)
+### Benchmark snapshot
 
-A typical comparison is **Redis (e.g. in Docker)** on one side and **RESPLite locally** on the other. In that setup, RESPLite often shows **better latency** because it avoids Docker networking and runs in the same process/host. The benchmark below uses RESPLite with the **default** PRAGMA template only.
+Representative results against Redis in Docker on the same host:
 
-**Example results (Redis vs RESPLite, default pragma, 10k iterations):**
+| Suite         | Redis (Docker) | RESPLite (default) |
+|---------------|----------------|--------------------|
+| PING          | 8.79K/s        | 37.36K/s           |
+| SET+GET       | 4.68K/s        | 11.96K/s           |
+| HSET+HGET     | 4.40K/s        | 11.91K/s           |
+| ZADD+ZRANGE   | 7.80K/s        | 17.12K/s           |
+| FT.SEARCH     | 8.36K/s        | 8.22K/s            |
 
-| Suite           | Redis (Docker) | RESPLite (default) |
-|-----------------|----------------|--------------------|
-| PING            | 8.79K/s        | 37.36K/s           |
-| SET+GET         | 4.68K/s        | 11.96K/s           |
-| MSET+MGET(10)   | 4.41K/s        | 5.81K/s            |
-| INCR            | 9.54K/s        | 18.97K/s           |
-| HSET+HGET       | 4.40K/s        | 11.91K/s           |
-| HGETALL(50)     | 8.39K/s        | 11.01K/s           |
-| HLEN(50)        | 9.36K/s        | 31.21K/s           |
-| SADD+SMEMBERS   | 9.27K/s        | 17.37K/s           |
-| LPUSH+LRANGE    | 8.34K/s        | 14.27K/s           |
-| LREM            | 4.37K/s        | 6.08K/s            |
-| ZADD+ZRANGE     | 7.80K/s        | 17.12K/s           |
-| SET+DEL         | 4.39K/s        | 9.57K/s            |
-| FT.SEARCH       | 8.36K/s        | 8.22K/s            |
-
-*Run `npm run benchmark -- --template default` to reproduce. Numbers depend on host and whether Redis is native or in Docker.*
-
-How to run:
-
-```bash
-# Terminal 1: Redis on 6379 (e.g. docker run -p 6379:6379 redis). Terminal 2: RESPLite on 6380
-RESPLITE_PORT=6380 npm start
-
-# Terminal 3: run benchmark (Redis=6379, RESPLite=6380 by default)
-npm run benchmark
-
-# Only RESPLite with default pragma
-npm run benchmark -- --template default
-
-# Custom iterations and ports
-npm run benchmark -- --iterations 10000 --redis-port 6379 --resplite-port 6380
-```
+The full benchmark table is available later in [Benchmark](#benchmark-redis-vs-resplite).
 
 ## Install
 
@@ -67,124 +41,60 @@ npm run benchmark -- --iterations 10000 --redis-port 6379 --resplite-port 6380
 npm install resplite
 ```
 
-## Quick start (standalone server)
+## AI Skill
 
 ```bash
-npm start
+npx skills add https://github.com/clasen/RESPLite
 ```
 
-By default the server listens on port **6379** and stores data in `data.db` in the current directory.
+## JavaScript quick start
 
-```bash
-redis-cli -p 6379
-> PING
-PONG
-> SET foo bar
-OK
-> GET foo
-"bar"
-```
+The recommended way to use RESPLite is from your own Node.js script, creating the server with the options and observability hooks your app needs. If you prefer a standalone server or terminal workflow, see [CLI and standalone server reference](#cli-and-standalone-server-reference) below.
 
-### Standalone server script (fixed port)
+### Recommended server script
 
-Run this as a persistent background process (`node server.js`). RESPLite will listen on port 6380 and stay up until the process receives SIGINT (Ctrl+C) or SIGTERM; then it closes the server and exits cleanly. If you kill the process (e.g. SIGKILL or force quit), all client connections are closed as well — with the default configuration the server runs in the same process, so when the process exits the TCP server and its connections are torn down.
+In a typical app, you start RESPLite from your own process and attach hooks for observability. The client still receives the same RESP responses; hooks are for logging and monitoring only.
 
 ```javascript
-// server.js
-import { createRESPlite } from 'resplite/embed';
-
-const srv = await createRESPlite({ port: 6380, db: './data.db' });
-console.log(`RESPLite listening on ${srv.host}:${srv.port}`);
-
-```
-
-Then connect from any other script or process:
-
-```bash
-redis-cli -p 6380 PING
-```
-
-### Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `RESPLITE_PORT` | `6379` | Server port |
-| `RESPLITE_DB` | `./data.db` | SQLite database file |
-| `RESPLITE_PRAGMA_TEMPLATE` | `default` | SQLite PRAGMA preset (see below) |
-
-### PRAGMA templates
-
-| Template | Description | Key settings |
-|---|---|---|
-| `default` | Balanced durability and speed (recommended) | WAL, synchronous=NORMAL, 20 MB cache |
-| `performance` | Maximum throughput, reduced crash safety | WAL, synchronous=OFF, 64 MB cache, 512 MB mmap, exclusive locking |
-| `safety` | Crash-safe writes at the cost of speed | WAL, synchronous=FULL, 20 MB cache |
-| `minimal` | Only WAL + foreign keys | WAL, foreign_keys=ON |
-| `none` | No pragmas applied — pure SQLite defaults | — |
-
-## Programmatic usage (embedded)
-
-RESPLite can be started and consumed entirely within a single Node.js script — no separate process needed. This is exactly how the test suite works.
-
-### Minimal example
-
-```javascript
-import { createClient } from 'redis';
-import { createRESPlite } from 'resplite/embed';
-
-const srv = await createRESPlite({ db: './my-app.db' });
-const client = createClient({ socket: { port: srv.port, host: '127.0.0.1' } });
-await client.connect();
-
-await client.set('hello', 'world');
-console.log(await client.get('hello'));  // → "world"
-
-await client.quit();
-await srv.close();
-```
-
-### Observability (event hooks)
-
-When embedding RESPLite you can pass optional hooks to log unknown commands, command errors, or socket errors (e.g. for `warn`/`error` in your logger). The client still receives the same RESP responses; hooks are for observability only.
-
-```javascript
-import pino from 'pino';
-const log = pino(); // or your logger
+import LemonLog from 'lemonlog';
+const log = new LemonLog('RESPlite');
 
 const srv = await createRESPlite({
   port: 6380,
   db: './data.db',
   hooks: {
     onUnknownCommand({ command, argsCount, clientAddress }) {
-      log.warn({ command, argsCount, clientAddress }, 'RESPLite: unsupported command');
+      log.warn({ command, argsCount, clientAddress }, 'unsupported command');
     },
     onCommandError({ command, error, clientAddress }) {
-      log.warn({ command, error, clientAddress }, 'RESPLite: command error');
+      log.warn({ command, error, clientAddress }, 'command error');
     },
     onSocketError({ error, clientAddress }) {
-      log.error({ err: error, clientAddress }, 'RESPLite: connection error');
+      log.error({ err: error, clientAddress }, 'connection error');
     },
   },
 });
 ```
 
-| Hook | When it is called |
-|------|--------------------|
-| `onUnknownCommand` | Client sent a command not implemented by RESPLite (e.g. `SUBSCRIBE`, `PUBLISH`). |
-| `onCommandError` | A command failed (wrong type, invalid args, or handler threw). |
-| `onSocketError` | The connection socket emitted an error (e.g. `ECONNRESET`). |
+Available hooks:
+
+- `onUnknownCommand`: client sent a command not implemented by RESPLite, such as `SUBSCRIBE` or `PUBLISH`.
+- `onCommandError`: a command failed because of wrong type, invalid args, or a handler error.
+- `onSocketError`: the connection socket emitted an error, for example `ECONNRESET`.
+
+If you want a tiny in-process smoke test that starts RESPLite and connects with the `redis` client in the same script, see [Minimal embedded example](#minimal-embedded-example) below.
 
 ## Migration from Redis
 
-RESPLite is a good fit for migrating **non-replicated Redis** instances that have **grown large** (e.g. tens of GB) and where RESPLite's latency is acceptable. The flow (dirty-key tracker, bulk import, cutover) is designed for that scenario with minimal downtime.
+RESPLite is a good fit for migrating **non-replicated Redis** instances that have **grown large** (e.g. tens of GB) and where RESPLite's latency is acceptable. The recommended path is to drive the migration from a Node.js script via `resplite/migration`, keeping preflight, dirty tracking, bulk import, cutover, and verification in one place.
 
-Migration supports two modes:
+### Recommended migration script
 
-### Programmatic migration API (JavaScript)
-
-As an alternative to the CLI, the full migration flow is available as a JavaScript API via `resplite/migration`. Useful for embedding the migration inside your own scripts or automation pipelines.
+The full flow can run from a single script: inspect Redis, enable keyspace notifications, track dirty keys in-process, bulk import with checkpoints, apply dirty keys during cutover, verify, and disconnect cleanly.
 
 ```javascript
+import { stdin, stdout } from 'node:process';
+import { createInterface } from 'node:readline/promises';
 import { createMigration } from 'resplite/migration';
 
 const m = createMigration({
@@ -192,12 +102,11 @@ const m = createMigration({
   to:    './resplite.db',           // destination SQLite DB path (required)
   runId: 'my-migration-1',          // unique run ID (required for bulk/status/applyDirty)
 
-  // optional — same defaults as the CLI:
-  scanCount:      1000,
-  batchKeys:      200,
+  // optional
+  scanCount:      5000,
+  batchKeys:      1000,
   batchBytes:     64 * 1024 * 1024,  // 64 MB
   maxRps:         0,                  // 0 = unlimited
-  pragmaTemplate: 'default',
 
   // If your Redis deployment renamed CONFIG for security:
   // configCommand: 'MYCONFIG',
@@ -217,10 +126,19 @@ const ks = await m.enableKeyspaceNotifications();
 // → { ok: true, previous: '', applied: 'KEA' }
 // If CONFIG is renamed and configCommand was not set, ok=false and error explains how to fix it.
 
+// Step 0c — Start dirty tracking (in-process, same script)
+await m.startDirtyTracker({
+  onProgress: (p) => {
+    // one callback per keyspace event tracked during bulk/cutover
+    console.log(`[dirty ${p.totalEvents}] event=${p.event} key=${p.key}`);
+  },
+});
+
 // Step 1 — Bulk import (checkpointed, resumable). Same script to start or continue.
 // Use keyCountEstimate from preflight to show progress % (estimate; actual count may change).
 const total = info.keyCountEstimate || 1;
 await m.bulk({
+  resume: true, 
   onProgress: (r) => {
     const pct = total ? ((r.scanned_keys / total) * 100).toFixed(1) : '—';
     console.log(
@@ -233,10 +151,27 @@ await m.bulk({
 const { run, dirty } = m.status();
 console.log('bulk status:', run.status, '— dirty counts:', dirty);
 
-// Step 2 — Apply dirty keys that changed in Redis during bulk
+// Step 2 — Pause for cutover:
+// stop the app that is still writing to Redis, then press Enter.
+const rl = createInterface({ input: stdin, output: stdout });
+await rl.question('Stop app traffic to Redis, then press Enter to apply the final dirty set...');
+rl.close();
+
+// Step 3 — Apply dirty keys that changed in Redis during bulk
 await m.applyDirty();
 
-// Step 3 — Verify a sample of keys match between Redis and the destination
+// Step 3b — Stop tracker after cutover
+await m.stopDirtyTracker();
+
+// If the source also uses FT.*, this is where you would run m.migrateSearch().
+// Step 3c — Migrate RediSearch indices after writes are frozen
+await m.migrateSearch({
+  onProgress: (r) => {
+    console.log(`[search ${r.name}] docs=${r.docsImported} skipped=${r.docsSkipped} warnings=${r.warnings.length}`);
+  },
+});
+
+// Step 4 — Verify a sample of keys match between Redis and the destination
 const result = await m.verify({ samplePct: 0.5, maxSample: 10000 });
 console.log(`verified ${result.sampled} keys — mismatches: ${result.mismatches.length}`);
 
@@ -244,13 +179,17 @@ console.log(`verified ${result.sampled} keys — mismatches: ${result.mismatches
 await m.close();
 ```
 
-**Automatic resume (default)**  
+**Bulk: Automatic resume (default)**  
 `resume` defaults to `true`. It doesn't matter whether it's the first run or a resume: the same script works for both starting and continuing. The first run starts from cursor 0; if the process is interrupted (Ctrl+C, crash, etc.), running the script again continues from the last checkpoint. You don't need to pass `resume: false` on the first run or change anything to resume.
 
 **Graceful shutdown**  
 On SIGINT (Ctrl+C) or SIGTERM, the bulk importer checkpoints progress, sets the run status to `aborted`, closes the SQLite database cleanly (so WAL is checkpointed and the file is not left open), then exits. You can safely interrupt a long-running bulk and resume later.
 
-The dirty-key tracker (to capture writes during bulk) still runs as a separate process via `npx resplite-dirty-tracker`. The API above handles everything else in a single script.
+The JS API can run the dirty-key tracker in-process via `m.startDirtyTracker()` / `m.stopDirtyTracker()`, so the full flow stays inside a single script.
+
+For a real cutover, the simplest flow is: let bulk finish, stop the app that still writes to Redis, press Enter to apply the final dirty set, run `migrateSearch()` if you use `FT.*`, and then switch traffic to RESPLite.
+
+The KV bulk flow imports strings, hashes, sets, lists, and zsets. If your source also uses `FT.*` indices, see [Migrating RediSearch indices](#migrating-redisearch-indices).
 
 #### Renamed CONFIG command
 
@@ -272,112 +211,7 @@ const info = await m.preflight();
 const result = await m.enableKeyspaceNotifications({ value: 'KEA' });
 ```
 
-The same flag is available in the CLI:
-
-```bash
-npx resplite-dirty-tracker start --run-id run_001 --to ./resplite.db \
-  --from redis://10.0.0.10:6379 --config-command MYCONFIG
-```
-### Simple one-shot import
-
-For small datasets or when downtime is acceptable:
-
-```bash
-# Default: redis://127.0.0.1:6379 → ./data.db
-npm run import-from-redis -- --db ./migrated.db
-
-# Custom Redis URL
-npm run import-from-redis -- --db ./migrated.db --redis-url redis://127.0.0.1:6379
-
-# Or host/port
-npm run import-from-redis -- --db ./migrated.db --host 127.0.0.1 --port 6379
-
-# Optional: PRAGMA template for the target DB
-npm run import-from-redis -- --db ./migrated.db --pragma-template performance
-```
-
-### Redis with authentication
-
-Migration supports Redis instances protected by a password. Use a Redis URL that includes the password (or username and password for Redis 6+ ACL):
-
-- **Password only:** `redis://:PASSWORD@host:port`
-- **Username and password:** `redis://username:PASSWORD@host:port`
-
-Examples:
-
-```bash
-# One-shot import from authenticated Redis
-npm run import-from-redis -- --db ./migrated.db --redis-url "redis://:mysecret@127.0.0.1:6379"
-
-# flow: use --from with the full URL (or set RESPLITE_IMPORT_FROM)
-npx resplite-import preflight --from "redis://:mysecret@10.0.0.10:6379" --to ./resplite.db
-npx resplite-dirty-tracker start --run-id run_001 --from "redis://:mysecret@10.0.0.10:6379" --to ./resplite.db
-```
-
-For one-shot import, authentication is only available when using `--redis-url`; the `--host` / `--port` options do not support a password.
-
-**Search indices (FT.\*)**  
-The KV bulk migration imports only the Redis keyspace (strings, hashes, sets, lists, zsets). RediSearch index schemas and documents are migrated separately with the `migrate-search` step — see [Migrating RediSearch indices](#migrating-redisearch-indices) below.
-
-### Minimal-downtime migration
-
-For large datasets (~30 GB), use the Dirty Key Registry flow so the bulk of the migration runs online and only a short cutover is needed.
-
-**Enable keyspace notifications in Redis** (required for the dirty-key tracker). Either run at runtime:
-
-```bash
-redis-cli CONFIG SET notify-keyspace-events KEA
-```
-
-Or add to `redis.conf` and restart Redis:
-
-```
-notify-keyspace-events KEA
-```
-
-(`K` = keyspace prefix, `E` = keyevent prefix, `A` = all event types — lets the tracker see every key change and expiration.)
-
-> **Renamed CONFIG command?** Some Redis deployments rename `CONFIG` for security. Pass `--config-command <name>` to the CLI tools, or the `configCommand` option to the JS API — see below.
-
-1. **Preflight** – Check Redis, key count, type distribution, and that keyspace notifications are enabled:
-   ```bash
-   npx resplite-import preflight --from redis://10.0.0.10:6379 --to ./resplite.db
-   ```
-
-2. **Start dirty-key tracker** – Captures keys modified during bulk (requires `notify-keyspace-events` in Redis):
-   ```bash
-   npx resplite-dirty-tracker start --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db
-   # If CONFIG was renamed:
-   npx resplite-dirty-tracker start --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db --config-command MYCONFIG
-   ```
-
-3. **Bulk import** – SCAN and copy all keys; progress is checkpointed and resumable (resume is default; re-run the same command to continue after a stop):
-   ```bash
-   npx resplite-import bulk --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db \
-     --scan-count 1000 --max-rps 2000 --batch-keys 200 --batch-bytes 64MB
-   ```
-
-4. **Monitor** – Check run and dirty-key counts:
-   ```bash
-   npx resplite-import status --run-id run_001 --to ./resplite.db
-   ```
-
-5. **Cutover** – Freeze app writes to Redis, then apply remaining dirty keys:
-   ```bash
-   npx resplite-import apply-dirty --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db
-   ```
-
-6. **Stop tracker and switch** – Stop the tracker and point clients to RespLite:
-   ```bash
-   npx resplite-dirty-tracker stop --run-id run_001 --to ./resplite.db
-   ```
-
-7. **Verify** – Optional sampling check between Redis and destination:
-   ```bash
-   npx resplite-import verify --run-id run_001 --from redis://10.0.0.10:6379 --to ./resplite.db --sample 0.5%
-   ```
-
-Then start RespLite with the migrated DB: `RESPLITE_DB=./resplite.db npm start`.
+The same `configCommand` override is used by `preflight()` and `enableKeyspaceNotifications()` in the programmatic flow.
 
 #### Low-level re-exports
 
@@ -388,6 +222,27 @@ import {
   runPreflight, runBulkImport, runApplyDirty, runVerify,
   getRun, getDirtyCounts, createRun, setRunStatus, logError,
 } from 'resplite/migration';
+```
+
+## JavaScript examples
+
+Once connected through the `redis` client, you can use RESPLite with the usual Redis-style API.
+
+### Minimal embedded example
+
+```javascript
+import { createClient } from 'redis';
+import { createRESPlite } from 'resplite/embed';
+
+const srv = await createRESPlite({ db: './my-app.db' });
+const client = createClient({ socket: { port: srv.port, host: '127.0.0.1' } });
+await client.connect();
+
+await client.set('hello', 'world');
+console.log(await client.get('hello'));  // → "world"
+
+await client.quit();
+await srv.close();
 ```
 
 ### Strings, TTL, and key operations
@@ -561,33 +416,9 @@ await c2.quit();
 await srv2.close();
 ```
 
-### Migrating RediSearch indices
+## Migrating RediSearch indices
 
-If your Redis source uses **RediSearch** (Redis Stack or the `redis/search` module), run `migrate-search` after (or during) the KV bulk import. It reads index schemas with `FT.INFO`, creates them in RespLite, and imports documents by scanning the matching hash keys.
-
-**CLI:**
-
-```bash
-# Migrate all indices
-npx resplite-import migrate-search \
-  --from redis://10.0.0.10:6379 \
-  --to   ./resplite.db
-
-# Migrate specific indices only
-npx resplite-import migrate-search \
-  --from redis://10.0.0.10:6379 \
-  --to   ./resplite.db \
-  --index products \
-  --index articles
-
-# Options
-#   --scan-count N          SCAN COUNT hint (default 500)
-#   --max-rps N             throttle Redis reads
-#   --batch-docs N          docs per SQLite transaction (default 200)
-#   --max-suggestions N     cap for suggestion import (default 10000)
-#   --no-skip               overwrite if the index already exists in RespLite
-#   --no-suggestions        skip suggestion import
-```
+If your Redis source uses **RediSearch** (Redis Stack or the `redis/search` module), the best moment to run `migrateSearch()` is after the final KV cutover, once writes to Redis are already frozen. It reads index schemas with `FT.INFO`, creates them in RESPLite, and imports documents by scanning the matching hash keys.
 
 **Programmatic API:**
 
@@ -598,7 +429,7 @@ const result = await m.migrateSearch({
   onlyIndices:     ['products', 'articles'], // omit to migrate all
   batchDocs:       200,
   maxSuggestions:  10000,
-  skipExisting:    true,   // default
+  skipExisting:    true,   // reuse existing destination index if already created
   withSuggestions: true,   // default
   onProgress: (r) => console.log(r.name, r.docsImported, r.warnings),
 });
@@ -608,7 +439,7 @@ const result = await m.migrateSearch({
 
 **What gets migrated:**
 
-| RediSearch type | RespLite | Notes |
+| RediSearch type | RESPLite | Notes |
 |---|---|---|
 | TEXT | TEXT | Direct |
 | TAG | TEXT | Values preserved; TAG filtering lost |
@@ -619,6 +450,88 @@ const result = await m.migrateSearch({
 - A `payload` field is added automatically if none of the source fields maps to it.
 - Suggestions are imported via `FT.SUGGET "" MAX n WITHSCORES` (no cursor; capped at `maxSuggestions`).
 - Graceful shutdown: Ctrl+C finishes the current document, closes SQLite cleanly, and exits with a non-zero code.
+
+## CLI and standalone server reference
+
+If you prefer operating RESPLite from the terminal, or want separate long-running processes, use the commands below.
+
+### Run as a standalone server
+
+```bash
+npm start
+```
+
+By default the server listens on port **6379** and stores data in `data.db` in the current directory.
+
+```bash
+redis-cli -p 6379
+> PING
+PONG
+> SET foo bar
+OK
+> GET foo
+"bar"
+```
+
+### Standalone server script (fixed port)
+
+Run this as a persistent background process (`node server.js`). RESPLite will listen on port 6380 and stay up until the process receives SIGINT (Ctrl+C) or SIGTERM; then it closes the server and exits cleanly. If you kill the process (for example, SIGKILL or force quit), all client connections are closed as well.
+
+```javascript
+// server.js
+import { createRESPlite } from 'resplite/embed';
+
+const srv = await createRESPlite({ port: 6380, db: './data.db' });
+console.log(`RESPLite listening on ${srv.host}:${srv.port}`);
+```
+
+Then connect from any other script or process:
+
+```bash
+redis-cli -p 6380 PING
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `RESPLITE_PORT` | `6379` | Server port |
+| `RESPLITE_DB` | `./data.db` | SQLite database file |
+| `RESPLITE_PRAGMA_TEMPLATE` | `default` | SQLite PRAGMA preset (see below) |
+
+### PRAGMA templates
+
+| Template | Description | Key settings |
+|---|---|---|
+| `default` | Balanced durability and speed (recommended) | WAL, synchronous=NORMAL, 20 MB cache |
+| `performance` | Maximum throughput, reduced crash safety | WAL, synchronous=OFF, 64 MB cache, 512 MB mmap, exclusive locking |
+| `safety` | Crash-safe writes at the cost of speed | WAL, synchronous=FULL, 20 MB cache |
+| `minimal` | Only WAL + foreign keys | WAL, foreign_keys=ON |
+| `none` | No pragmas applied, pure SQLite defaults | - |
+
+## Benchmark (Redis vs RESPLite)
+
+A typical comparison is **Redis (for example, in Docker)** on one side and **RESPLite locally** on the other. In that setup, RESPLite often shows **better latency** because it avoids Docker networking and runs in the same process or host. The benchmark below uses RESPLite with the **default** PRAGMA template only.
+
+**Example results (Redis vs RESPLite, default pragma, 10k iterations):**
+
+| Suite           | Redis (Docker) | RESPLite (default) |
+|-----------------|----------------|--------------------|
+| PING            | 8.79K/s        | 37.36K/s           |
+| SET+GET         | 4.68K/s        | 11.96K/s           |
+| MSET+MGET(10)   | 4.41K/s        | 5.81K/s            |
+| INCR            | 9.54K/s        | 18.97K/s           |
+| HSET+HGET       | 4.40K/s        | 11.91K/s           |
+| HGETALL(50)     | 8.39K/s        | 11.01K/s           |
+| HLEN(50)        | 9.36K/s        | 31.21K/s           |
+| SADD+SMEMBERS   | 9.27K/s        | 17.37K/s           |
+| LPUSH+LRANGE    | 8.34K/s        | 14.27K/s           |
+| LREM            | 4.37K/s        | 6.08K/s            |
+| ZADD+ZRANGE     | 7.80K/s        | 17.12K/s           |
+| SET+DEL         | 4.39K/s        | 9.57K/s            |
+| FT.SEARCH       | 8.36K/s        | 8.22K/s            |
+
+To reproduce the benchmark, run `npm run benchmark -- --template default`. Numbers depend on host and whether Redis is native or in Docker.
 
 ## Compatibility matrix
 
@@ -636,7 +549,6 @@ const result = await m.migrateSearch({
 | **Search (FT.\*)** | FT.CREATE, FT.INFO, FT.ADD, FT.DEL, FT.SEARCH, FT.SUGADD, FT.SUGGET, FT.SUGDEL |
 | **Introspection** | TYPE, SCAN, KEYS, MONITOR |
 | **Admin** | SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
-| **Tooling** | Redis import CLI (see Migration from Redis) |
 
 ### Not supported (v1)
 
@@ -660,9 +572,6 @@ Unsupported commands return: `ERR command not supported yet`.
 | `npm run test:contract` | Contract tests (redis client) |
 | `npm run test:stress` | Stress tests |
 | `npm run benchmark` | Comparative benchmark Redis vs RESPLite |
-| `npm run import-from-redis` | One-shot import from Redis into a SQLite DB |
-| `npx resplite-import` (preflight, bulk, status, apply-dirty, verify) | Migration CLI (minimal-downtime flow) |
-| `npx resplite-dirty-tracker <start\|stop>` | Dirty-key tracker for migration cutover |
 
 ## Specification
 

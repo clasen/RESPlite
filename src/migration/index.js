@@ -26,6 +26,7 @@ import { runApplyDirty } from './apply-dirty.js';
 import { runVerify } from './verify.js';
 import { runMigrateSearch } from './migrate-search.js';
 import { getRun, getDirtyCounts } from './registry.js';
+import { startDirtyTracker as startDirtyTrackerProcess } from './tracker.js';
 
 /**
  * @typedef {object} MigrationOptions
@@ -47,6 +48,8 @@ import { getRun, getDirtyCounts } from './registry.js';
  * @returns {{
  *   preflight(): Promise<object>,
  *   enableKeyspaceNotifications(opts?: { value?: string, merge?: boolean }): Promise<{ ok: boolean, previous: string|null, applied: string, error?: string }>,
+ *   startDirtyTracker(opts?: { pragmaTemplate?: string, onProgress?: function }): Promise<{ running: true }>,
+ *   stopDirtyTracker(): Promise<{ running: false }>,
  *   bulk(opts?: { resume?: boolean, onProgress?: function }): Promise<object>,
  *   status(): { run: object, dirty: object } | null,
  *   applyDirty(opts?: { batchKeys?: number, maxRps?: number }): Promise<object>,
@@ -69,6 +72,7 @@ export function createMigration({
   if (!to) throw new Error('createMigration: "to" (db path) is required');
 
   let _client = null;
+  let _tracker = null;
 
   async function getClient() {
     if (_client) return _client;
@@ -111,6 +115,41 @@ export function createMigration({
     async enableKeyspaceNotifications({ value = 'KEA', merge = true } = {}) {
       const client = await getClient();
       return setKeyspaceEvents(client, value, { configCommand, merge });
+    },
+
+    /**
+     * Start dirty-key tracking in-process for this migration controller.
+     * Use this to run the full minimal-downtime flow in one Node script.
+     *
+     * @param {{
+     *   pragmaTemplate?: string,
+     *   onProgress?: (progress: { runId: string, key: string, event: string, totalEvents: number, at: string }) => void | Promise<void>
+     * }} [opts]
+     */
+    async startDirtyTracker({ pragmaTemplate: pt = pragmaTemplate, onProgress } = {}) {
+      if (_tracker) return { running: true };
+      const id = requireRunId();
+      _tracker = await startDirtyTrackerProcess({
+        from,
+        to,
+        runId: id,
+        pragmaTemplate: pt,
+        configCommand,
+        onProgress,
+      });
+      return { running: true };
+    },
+
+    /**
+     * Stop in-process dirty-key tracking started by `startDirtyTracker`.
+     * Safe to call even if tracking is not running.
+     */
+    async stopDirtyTracker() {
+      if (_tracker) {
+        await _tracker.stop();
+        _tracker = null;
+      }
+      return { running: false };
     },
 
     /**
@@ -208,6 +247,10 @@ export function createMigration({
      * Disconnect from Redis. Call when done with all migration operations.
      */
     async close() {
+      if (_tracker) {
+        await _tracker.stop().catch(() => {});
+        _tracker = null;
+      }
       if (_client) {
         await _client.quit().catch(() => {});
         _client = null;

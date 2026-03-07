@@ -331,7 +331,7 @@ After freeze begins and delta completes:
 
 ---
 
-# F.9 Suggested End-to-End Migration Process (Example)
+# F.9 Suggested End-to-End Migration Process (Programmatic Example)
 
 Assume:
 
@@ -341,119 +341,55 @@ Assume:
 * Supported types: string/hash/set/list/zset
 * Goal: minimal downtime
 
-## Step 0: Preflight
+```javascript id="f9programmatic"
+import { stdin, stdout } from 'node:process';
+import { createInterface } from 'node:readline/promises';
+import { createMigration } from 'resplite/migration';
 
-```bash id="4bct0i"
-resplite-import preflight \
-  --from redis://10.0.0.10:6379 \
-  --to ./resplite.db
+const m = createMigration({
+  from: 'redis://10.0.0.10:6379',
+  to: './resplite.db',
+  runId: 'run_2026_03_03',
+  scanCount: 1000,
+  batchKeys: 200,
+  batchBytes: 64 * 1024 * 1024,
+  maxRps: 2000,
+});
+
+const info = await m.preflight();
+await m.enableKeyspaceNotifications();
+await m.startDirtyTracker();
+
+const total = info.keyCountEstimate || 1;
+await m.bulk({
+  resume: true,
+  onProgress: (r) => {
+    const pct = ((r.scanned_keys / total) * 100).toFixed(1);
+    console.log(`bulk ${pct}% scanned=${r.scanned_keys} migrated=${r.migrated_keys}`);
+  },
+});
+
+console.log(m.status());
+
+const rl = createInterface({ input: stdin, output: stdout });
+await rl.question('Freeze writes to Redis, then press Enter to apply the final dirty set...');
+rl.close();
+
+await m.applyDirty();
+await m.stopDirtyTracker();
+
+const verify = await m.verify({ samplePct: 0.5, maxSample: 10000 });
+console.log(verify);
+
+await m.close();
 ```
 
-Outputs:
+Notes:
 
-* estimated key count
-* type distribution sample
-* recommended concurrency and scan count
-* detection of unsupported types
-
-## Step 1: Start Dirty Key Tracker
-
-Start the tracker first, so it captures changes during the entire bulk run.
-
-```bash id="6km4l7"
-resplite-dirty-tracker start \
-  --run-id run_2026_03_03 \
-  --from redis://10.0.0.10:6379 \
-  --to ./resplite.db \
-  --channels keyevent
-```
-
-## Step 2: Run Bulk Import Online
-
-```bash id="a9g2aa"
-resplite-import bulk \
-  --run-id run_2026_03_03 \
-  --from redis://10.0.0.10:6379 \
-  --to ./resplite.db \
-  --scan-count 1000 \
-  --max-concurrency 32 \
-  --max-rps 2000 \
-  --batch-keys 200 \
-  --batch-bytes 64MB \
-  --ttl-mode preserve \
-  --resume
-```
-
-Monitor progress:
-
-```bash id="rkf6uv"
-resplite-import status --run-id run_2026_03_03 --to ./resplite.db
-```
-
-## Step 3 (Optional): Pre-Delta While Still Live
-
-Apply dirty keys while Redis is still live to reduce final delta size:
-
-```bash id="v5xc6f"
-resplite-import apply-dirty \
-  --run-id run_2026_03_03 \
-  --from redis://10.0.0.10:6379 \
-  --to ./resplite.db \
-  --max-concurrency 32 \
-  --max-rps 2000 \
-  --batch-keys 200 \
-  --ttl-mode preserve
-```
-
-You can run this repeatedly (or continuously) while bulk is still running.
-
-## Step 4: Cutover Window (Freeze Writes)
-
-* Put the application into maintenance mode (freeze writes to Redis).
-* Keep dirty tracker running for a moment to capture any last writes.
-
-## Step 5: Final Delta Apply
-
-With writes frozen, apply all remaining dirty keys:
-
-```bash id="v0x8xo"
-resplite-import apply-dirty \
-  --run-id run_2026_03_03 \
-  --from redis://10.0.0.10:6379 \
-  --to ./resplite.db \
-  --max-concurrency 64 \
-  --max-rps 5000 \
-  --batch-keys 500 \
-  --ttl-mode preserve
-```
-
-Verify no remaining dirty keys:
-
-```bash id="0ca1y7"
-resplite-import status --run-id run_2026_03_03 --to ./resplite.db
-```
-
-## Step 6: Stop Dirty Tracker and Switch Clients
-
-Stop tracker:
-
-```bash id="1v1u1j"
-resplite-dirty-tracker stop --run-id run_2026_03_03 --to ./resplite.db
-```
-
-Switch application Redis endpoint to RespLite server (RESP port).
-
-## Step 7: Verification (Post-Cutover)
-
-Run a sampling verification:
-
-```bash id="p6w5q6"
-resplite-import verify \
-  --run-id run_2026_03_03 \
-  --from redis://10.0.0.10:6379 \
-  --to ./resplite.db \
-  --sample 0.5%
-```
+* Start dirty tracking before bulk so it captures writes during the whole import.
+* Keep the tracker running until after the final `applyDirty()`.
+* The cutover window is: freeze writes to Redis, apply the remaining dirty set, stop the tracker, then switch clients to RespLite.
+* `status()` is synchronous and can be polled at any point from the destination DB.
 
 ---
 
@@ -482,7 +418,7 @@ Implementation may use:
 
 * updating `migration_runs.status`
 * a simple control file
-* or a CLI that updates the SQLite run row
+* or another control surface that updates the SQLite run row
 
 ---
 
@@ -498,7 +434,7 @@ If dirty tracker disconnects:
 
 ## F.11.2 Importer crash/restart
 
-* On restart with `--resume`, continue from stored cursor.
+* On restart with resume enabled, continue from stored cursor.
 * Already migrated keys may be overwritten idempotently.
 
 ## F.11.3 Idempotency requirements
@@ -549,31 +485,7 @@ RespLite requires a `payload` TEXT field. If none of the source fields maps to `
 
 Same pattern as `bulk` (§F.7.2.1): SIGINT/SIGTERM finishes the current document, closes the SQLite DB cleanly, and exits with a non-zero code.
 
-## F.10.6 CLI
-
-```bash
-# Migrate all RediSearch indices
-resplite-import migrate-search \
-  --from redis://10.0.0.10:6379 \
-  --to   ./resplite.db
-
-# Migrate specific indices only
-resplite-import migrate-search \
-  --from redis://10.0.0.10:6379 \
-  --to   ./resplite.db \
-  --index products \
-  --index articles
-
-# Options
-#   --scan-count N          SCAN COUNT hint (default 500)
-#   --max-rps N             throttle (default unlimited)
-#   --batch-docs N          docs per SQLite transaction (default 200)
-#   --max-suggestions N     cap for FT.SUGGET (default 10000)
-#   --no-skip               overwrite if index already exists
-#   --no-suggestions        skip suggestion import
-```
-
-## F.10.7 Programmatic API
+## F.10.6 Programmatic API
 
 ```javascript
 const m = createMigration({ from, to, runId });

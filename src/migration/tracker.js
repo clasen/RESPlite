@@ -27,6 +27,13 @@ const KEYEVENT_PATTERN = '__keyevent@0__:*';
  * @param {string} options.runId                           - Migration run identifier.
  * @param {string} [options.pragmaTemplate='default']
  * @param {string} [options.configCommand='CONFIG']        - CONFIG command name (in case it was renamed).
+ * @param {(progress: {
+ *   runId: string,
+ *   key: string,
+ *   event: string,
+ *   totalEvents: number,
+ *   at: string
+ * }) => void | Promise<void>} [options.onProgress]        - Called for each tracked keyspace event.
  * @returns {Promise<{ stop(): Promise<void> }>}
  * @throws {Error} If keyspace notifications are not enabled on Redis.
  */
@@ -36,6 +43,7 @@ export async function startDirtyTracker({
   runId,
   pragmaTemplate = 'default',
   configCommand = 'CONFIG',
+  onProgress,
 } = {}) {
   if (!to) throw new Error('startDirtyTracker: "to" (db path) is required');
   if (!runId) throw new Error('startDirtyTracker: "runId" is required');
@@ -66,12 +74,27 @@ export async function startDirtyTracker({
   );
   await subClient.connect();
 
+  let totalEvents = 0;
   await subClient.pSubscribe(KEYEVENT_PATTERN, (message, channel) => {
     const event = typeof channel === 'string'
       ? channel.split(':').pop()
       : String(channel ?? '').split(':').pop() || 'unknown';
     try {
       upsertDirtyKey(db, runId, message, event);
+      totalEvents += 1;
+      if (onProgress) {
+        Promise.resolve(
+          onProgress({
+            runId,
+            key: message,
+            event,
+            totalEvents,
+            at: new Date().toISOString(),
+          })
+        ).catch((err) => {
+          logError(db, runId, 'dirty_apply', 'Tracker onProgress error: ' + err.message, message);
+        });
+      }
     } catch (err) {
       logError(db, runId, 'dirty_apply', err.message, message);
     }

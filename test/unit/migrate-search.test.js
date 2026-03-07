@@ -6,7 +6,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runMigrateSearch, mapFields, buildDocFields } from '../../src/migration/migrate-search.js';
+import { runMigrateSearch, mapFields, buildDocFields, getDocScore } from '../../src/migration/migrate-search.js';
 import { openDb } from '../../src/storage/sqlite/db.js';
 import { getIndexMeta, getIndexCounts, search, suggestionGet } from '../../src/storage/sqlite/search.js';
 import { tmpDbPath } from '../helpers/tmp.js';
@@ -188,6 +188,26 @@ describe('buildDocFields', () => {
   });
 });
 
+// ── getDocScore ───────────────────────────────────────────────────────────────
+
+describe('getDocScore', () => {
+  it('prefers __score over score', () => {
+    assert.equal(getDocScore({ __score: '2.5', score: '1.0' }), 2.5);
+  });
+
+  it('uses score when __score is absent', () => {
+    assert.equal(getDocScore({ score: '3.25' }), 3.25);
+  });
+
+  it('falls back to 1.0 for invalid score values', () => {
+    assert.equal(getDocScore({ score: 'not-a-number' }), 1.0);
+  });
+
+  it('falls back to 1.0 when score fields are missing', () => {
+    assert.equal(getDocScore({}), 1.0);
+  });
+});
+
 // ── runMigrateSearch — core behaviour ─────────────────────────────────────────
 
 describe('runMigrateSearch', () => {
@@ -326,7 +346,7 @@ describe('runMigrateSearch', () => {
     assert.equal(idx.docsSkipped, 2);
   });
 
-  it('skipExisting=true skips already-existing index', async () => {
+  it('skipExisting=true reuses an existing index and refreshes documents', async () => {
     const dbPath = tmpDbPath();
     // First run — creates index
     const redis = makeFakeRedis({
@@ -342,6 +362,8 @@ describe('runMigrateSearch', () => {
     assert.equal(result2.indices[0].skipped, true);
     assert.equal(result2.indices[0].created, false);
     assert.equal(result2.indices[0].error, undefined);
+    assert.equal(result2.indices[0].docsImported, 1);
+    assert.ok(result2.indices[0].warnings.some((w) => w.includes('reusing existing schema')));
   });
 
   it('skipExisting=false errors on existing index', async () => {
@@ -372,6 +394,32 @@ describe('runMigrateSearch', () => {
     const result = await runMigrateSearch(redis, tmpDbPath(), { onlyIndices: ['a', 'c'] });
     const names = result.indices.map((i) => i.name);
     assert.deepEqual(names, ['a', 'c']);
+  });
+
+  it('deduplicates keys that match overlapping index prefixes', async () => {
+    const dbPath = tmpDbPath();
+    const redis = makeFakeRedis({
+      indexNames: ['overlap'],
+      indexInfo: {
+        overlap: {
+          prefixes: ['doc:', 'doc:special:'],
+          attributes: [{ identifier: 'payload', attribute: 'payload', type: 'TEXT' }],
+        },
+      },
+      scanKeys: ['doc:special:1'],
+      hashKeys: {
+        'doc:special:1': { payload: 'hello overlap' },
+      },
+    });
+
+    const result = await runMigrateSearch(redis, dbPath);
+    assert.equal(result.indices.length, 1);
+    assert.equal(result.indices[0].docsImported, 1);
+
+    const db = openDb(dbPath, { pragmaTemplate: 'minimal' });
+    const counts = getIndexCounts(db, 'overlap');
+    assert.equal(counts.num_docs, 1);
+    db.close();
   });
 
   it('imports suggestions', async () => {
