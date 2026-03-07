@@ -87,6 +87,13 @@ describe('CLIENT integration', () => {
     assert.equal(getResult.length, 0);
   });
 
+  it('CLIENT SETINFO LIB-VER / LIB-NAME returns OK (no-op)', async () => {
+    const reply = await sendCommand(port, argv('CLIENT', 'SETINFO', 'LIB-VER', '1.5.17'));
+    assert.equal(tryParseValue(reply, 0).value, 'OK');
+    const reply2 = await sendCommand(port, argv('CLIENT', 'SETINFO', 'LIB-NAME', 'myclient'));
+    assert.equal(tryParseValue(reply2, 0).value, 'OK');
+  });
+
   it('CLIENT wrong subcommand returns error', async () => {
     const reply = await sendCommand(port, argv('CLIENT', 'LIST'));
     const v = tryParseValue(reply, 0).value;

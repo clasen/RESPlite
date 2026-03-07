@@ -63,14 +63,14 @@ const srv = await createRESPlite({
   port: 6380,
   db: './data.db',
   hooks: {
-    onUnknownCommand({ command, argsCount, clientAddress }) {
-      log.warn({ command, argsCount, clientAddress }, 'unsupported command');
+    onUnknownCommand({ command, argv, clientAddress }) {
+      log.warn({ command, argv, clientAddress }, 'unsupported command');
     },
-    onCommandError({ command, error, clientAddress }) {
-      log.warn({ command, error, clientAddress }, 'command error');
+    onCommandError({ command, argv, error, clientAddress }) {
+      log.warn({ command, argv, error, clientAddress }, 'command error');
     },
     onSocketError({ error, clientAddress }) {
-      log.error({ err: error, clientAddress }, 'connection error');
+      log.error({ error, clientAddress }, 'connection error');
     },
   },
 });
@@ -78,8 +78,8 @@ const srv = await createRESPlite({
 
 Available hooks:
 
-- `onUnknownCommand`: client sent a command not implemented by RESPLite, such as `SUBSCRIBE` or `PUBLISH`.
-- `onCommandError`: a command failed because of wrong type, invalid args, or a handler error.
+- `onUnknownCommand`: client sent a command not implemented by RESPLite, such as `SUBSCRIBE` or `PUBLISH`. Payload includes `argv` (full command line as strings, e.g. `['CLIENT','LIST']`) so you can log exactly what was sent.
+- `onCommandError`: a command failed because of wrong type, invalid args, or a handler error. Payload includes `argv` for the full command line.
 - `onSocketError`: the connection socket emitted an error, for example `ECONNRESET`.
 
 If you want a tiny in-process smoke test that starts RESPLite and connects with the `redis` client in the same script, see [Minimal embedded example](#minimal-embedded-example) below.
@@ -126,11 +126,13 @@ const ks = await m.enableKeyspaceNotifications();
 // → { ok: true, previous: '', applied: 'KEA' }
 // If CONFIG is renamed and configCommand was not set, ok=false and error explains how to fix it.
 
-// Step 0c — Start dirty tracking (in-process, same script)
+// Start dirty tracking (in-process, same script)
+let dirtyLogging = true;
 await m.startDirtyTracker({
   onProgress: (p) => {
-    // one callback per keyspace event tracked during bulk/cutover
-    console.log(`[dirty ${p.totalEvents}] event=${p.event} key=${p.key}`);
+    if (dirtyLogging) {
+      console.log(`[dirty ${p.totalEvents}] event=${p.event} key=${p.key}`);
+    }
   },
 });
 
@@ -151,8 +153,12 @@ await m.bulk({
 const { run, dirty } = m.status();
 console.log('bulk status:', run.status, '— dirty counts:', dirty);
 
+// Stop dirty progress logs so the next prompt is visible (tracker keeps recording until stopDirtyTracker)
+dirtyLogging = false;
+
 // Step 2 — Pause for cutover:
 // stop the app that is still writing to Redis, then press Enter.
+// (readline reads from stdin, so Enter is captured even if anything else writes to stdout.)
 const rl = createInterface({ input: stdin, output: stdout });
 await rl.question('Stop app traffic to Redis, then press Enter to apply the final dirty set...');
 rl.close();

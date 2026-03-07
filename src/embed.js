@@ -21,8 +21,8 @@ export { handleConnection, createEngine, openDb };
  * All hooks are optional. Called with plain objects; do not mutate.
  *
  * @typedef {object} RESPliteHooks
- * @property {(payload: { command: string, argsCount: number, clientAddress: string, connectionId: number }) => void} [onUnknownCommand] Invoked when the client sends a command not implemented by RESPLite.
- * @property {(payload: { command: string, error: string, clientAddress: string, connectionId: number }) => void} [onCommandError] Invoked when a command handler throws or returns an error (e.g. WRONGTYPE, invalid args).
+ * @property {(payload: { command: string, argsCount: number, argv: string[], clientAddress: string, connectionId: number }) => void} [onUnknownCommand] Invoked when the client sends a command not implemented by RESPLite. `argv` is the full command line as strings (e.g. `['CLIENT','LIST']`) for logging.
+ * @property {(payload: { command: string, error: string, argv: string[], clientAddress: string, connectionId: number }) => void} [onCommandError] Invoked when a command handler throws or returns an error (e.g. WRONGTYPE, invalid args). `argv` is the full command line as strings for logging.
  * @property {(payload: { error: Error, clientAddress: string, connectionId: number }) => void} [onSocketError] Invoked when a connection socket emits an error (e.g. ECONNRESET).
  */
 

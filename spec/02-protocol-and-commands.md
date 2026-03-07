@@ -16,6 +16,7 @@ Supported:
 
 - `GET`
 - `SET`
+- `SETEX`
 - `MGET`
 - `MSET`
 - `DEL`

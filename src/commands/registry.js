@@ -8,6 +8,7 @@ import * as echo from './echo.js';
 import * as quit from './quit.js';
 import * as get from './get.js';
 import * as set from './set.js';
+import * as setex from './setex.js';
 import * as del from './del.js';
 import * as unlink from './unlink.js';
 import * as exists from './exists.js';
@@ -72,6 +73,7 @@ import * as ftSugget from './ft-sugget.js';
 import * as ftSugdel from './ft-sugdel.js';
 import * as monitor from './monitor.js';
 import * as client from './client.js';
+import * as command from './command.js';
 
 const HANDLERS = new Map([
   ['PING', (e, a) => ping.handlePing()],
@@ -79,6 +81,7 @@ const HANDLERS = new Map([
   ['QUIT', (e, a) => quit.handleQuit()],
   ['GET', (e, a) => get.handleGet(e, a)],
   ['SET', (e, a) => set.handleSet(e, a)],
+  ['SETEX', (e, a) => setex.handleSetex(e, a)],
   ['DEL', (e, a) => del.handleDel(e, a)],
   ['UNLINK', (e, a) => unlink.handleUnlink(e, a)],
   ['EXISTS', (e, a) => exists.handleExists(e, a)],
@@ -143,6 +146,7 @@ const HANDLERS = new Map([
   ['FT.SUGDEL', (e, a) => ftSugdel.handleFtSugdel(e, a)],
   ['MONITOR', (e, a, ctx) => monitor.handleMonitor(a, ctx)],
   ['CLIENT', (e, a, ctx) => client.handleClient(e, a, ctx)],
+  ['COMMAND', (e, a, ctx) => command.handleCommand(e, a, ctx)],
 ]);
 
 /**
@@ -158,11 +162,14 @@ export function dispatch(engine, argv, context) {
   }
   const cmd = (Buffer.isBuffer(argv[0]) ? argv[0].toString('utf8') : String(argv[0])).toUpperCase();
   const args = argv.slice(1);
+  const argvStrings = argv.map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)));
+  if (context) context.getCommandNames = () => Array.from(HANDLERS.keys());
   const handler = HANDLERS.get(cmd);
   if (!handler) {
     context?.onUnknownCommand?.({
       command: cmd,
       argsCount: args.length,
+      argv: argvStrings ?? [cmd],
       clientAddress: context.clientAddress ?? '',
       connectionId: context.connectionId ?? 0,
     });
@@ -175,6 +182,7 @@ export function dispatch(engine, argv, context) {
       context?.onCommandError?.({
         command: cmd,
         error: result.error,
+        argv: argvStrings ?? [cmd],
         clientAddress: context.clientAddress ?? '',
         connectionId: context.connectionId ?? 0,
       });
@@ -188,6 +196,7 @@ export function dispatch(engine, argv, context) {
     context?.onCommandError?.({
       command: cmd,
       error: errorMsg,
+      argv: argvStrings ?? [cmd],
       clientAddress: context.clientAddress ?? '',
       connectionId: context.connectionId ?? 0,
     });

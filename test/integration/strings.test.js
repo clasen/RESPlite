@@ -49,4 +49,24 @@ describe('Strings integration', () => {
     const r = await sendCommand(port, argv('EXISTS', 'ex1', 'ex2'));
     assert.equal(r.toString('ascii'), ':1\r\n');
   });
+
+  it('SETEX sets key with TTL and returns OK', async () => {
+    const setexReply = await sendCommand(port, argv('SETEX', 'setexkey', '60', 'setexval'));
+    assert.equal(setexReply.toString('utf8'), '+OK\r\n');
+    const getReply = await sendCommand(port, argv('GET', 'setexkey'));
+    assert.equal(getReply.toString('utf8'), '$8\r\nsetexval\r\n');
+    const ttlReply = await sendCommand(port, argv('TTL', 'setexkey'));
+    const t = parseInt(ttlReply.toString('ascii').replace(/\D/g, ''), 10);
+    assert.ok(t >= 59 && t <= 60);
+  });
+
+  it('SETEX wrong number of arguments returns error', async () => {
+    const reply = await sendCommand(port, argv('SETEX', 'k', '10'));
+    assert.ok(reply.toString('utf8').includes('wrong number of arguments'));
+  });
+
+  it('SETEX invalid seconds returns error', async () => {
+    const reply = await sendCommand(port, argv('SETEX', 'k', '0', 'v'));
+    assert.ok(reply.toString('utf8').includes('invalid expire time'));
+  });
 });

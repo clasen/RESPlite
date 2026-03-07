@@ -1,5 +1,5 @@
 /**
- * CLIENT - connection introspection (SETNAME, GETNAME, ID).
+ * CLIENT - connection introspection (SETNAME, GETNAME, ID) and SETINFO (no-op for client lib version).
  * Requires connection context.
  */
 
@@ -30,6 +30,12 @@ export function handleClient(engine, args, context) {
       return { error: 'ERR wrong number of arguments for \'CLIENT ID\' command' };
     }
     return context.connectionId;
+  }
+  if (sub === 'SETINFO') {
+    if (args.length !== 3) {
+      return { error: 'ERR wrong number of arguments for \'CLIENT SETINFO\' command' };
+    }
+    return { simple: 'OK' };
   }
   return { error: 'ERR unknown subcommand or wrong number of arguments for \'CLIENT\'. Try CLIENT HELP.' };
 }
