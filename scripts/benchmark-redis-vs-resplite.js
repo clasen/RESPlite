@@ -293,6 +293,103 @@ async function benchDel(client, n) {
   }
 }
 
+async function benchStrlen(client, n) {
+  const key = 'bm:strlen';
+  await client.set(key, 'hello-world');
+  for (let i = 0; i < n; i++) await client.sendCommand(['STRLEN', key]);
+}
+
+async function benchHkeys(client, n) {
+  const key = 'bm:hash:keys';
+  await client.del(key);
+  await client.hSet(key, Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`f${i}`, `v${i}`])));
+  for (let i = 0; i < n; i++) await client.sendCommand(['HKEYS', key]);
+}
+
+async function benchHvals(client, n) {
+  const key = 'bm:hash:vals';
+  await client.del(key);
+  await client.hSet(key, Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`f${i}`, `v${i}`])));
+  for (let i = 0; i < n; i++) await client.sendCommand(['HVALS', key]);
+}
+
+async function benchLset(client, n) {
+  const key = 'bm:list:lset';
+  await client.del(key);
+  await client.rPush(key, Array.from({ length: 10 }, (_, i) => `item-${i}`));
+  for (let i = 0; i < n; i++) await client.sendCommand(['LSET', key, '5', `val-${i}`]);
+}
+
+async function benchLtrim(client, n) {
+  const key = 'bm:list:ltrim';
+  for (let i = 0; i < n; i++) {
+    await client.del(key);
+    await client.rPush(key, Array.from({ length: 20 }, (_, j) => `x${j}`));
+    await client.sendCommand(['LTRIM', key, '0', '9']);
+  }
+}
+
+async function benchRename(client, n) {
+  const a = 'bm:rename:a';
+  const b = 'bm:rename:b';
+  await client.set(a, 'v');
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['RENAME', a, b]);
+    await client.sendCommand(['RENAME', b, a]);
+  }
+}
+
+async function benchZcount(client, n) {
+  const key = 'bm:zset:count';
+  await client.del(key);
+  await client.zAdd(key, Array.from({ length: 100 }, (_, i) => ({ score: i, value: `m${i}` })));
+  for (let i = 0; i < n; i++) await client.sendCommand(['ZCOUNT', key, '0', '99']);
+}
+
+async function benchZincrby(client, n) {
+  const key = 'bm:zset:incr';
+  await client.del(key);
+  await client.zAdd(key, { score: 0, value: 'member' });
+  for (let i = 0; i < n; i++) await client.sendCommand(['ZINCRBY', key, '1', 'member']);
+}
+
+async function benchZremrangebyrank(client, n) {
+  const key = 'bm:zset:remrank';
+  for (let i = 0; i < n; i++) {
+    await client.del(key);
+    await client.zAdd(key, Array.from({ length: 100 }, (_, j) => ({ score: j, value: `m${j}` })));
+    await client.sendCommand(['ZREMRANGEBYRANK', key, '0', '9']);
+  }
+}
+
+async function benchZremrangebyscore(client, n) {
+  const key = 'bm:zset:remscore';
+  for (let i = 0; i < n; i++) {
+    await client.del(key);
+    await client.zAdd(key, Array.from({ length: 100 }, (_, j) => ({ score: j, value: `m${j}` })));
+    await client.sendCommand(['ZREMRANGEBYSCORE', key, '0', '9']);
+  }
+}
+
+async function benchSpop(client, n) {
+  const key = 'bm:set:spop';
+  await client.del(key);
+  await client.sAdd(key, Array.from({ length: 50 }, (_, i) => `m${i}`));
+  for (let i = 0; i < n; i++) {
+    const v = await client.sendCommand(['SPOP', key]);
+    if (v === null || (Array.isArray(v) && v.length === 0)) {
+      await client.sAdd(key, Array.from({ length: 50 }, (_, j) => `m${j}`));
+    }
+  }
+}
+
+async function benchSrandmember(client, n) {
+  const key = 'bm:set:srand';
+  await client.del(key);
+  await client.sAdd(key, Array.from({ length: 50 }, (_, i) => `m${i}`));
+  for (let i = 0; i < n; i++) await client.sendCommand(['SRANDMEMBER', key]);
+}
+
 const FT_INDEX = 'bm_ft_idx';
 const FT_DOCS = 50;
 
@@ -343,6 +440,18 @@ const SUITES = [
   { name: 'ZRANK+ZREVRANK', fn: benchZrankZrevrank, iterScale: 1 },
   { name: 'ZREVRANGEBYSCORE', fn: benchZrevrangebyscore, iterScale: 1 },
   { name: 'SET+DEL', fn: benchDel, iterScale: 1 },
+  { name: 'STRLEN', fn: benchStrlen, iterScale: 1 },
+  { name: 'HKEYS(50)', fn: benchHkeys, iterScale: 1 },
+  { name: 'HVALS(50)', fn: benchHvals, iterScale: 1 },
+  { name: 'LSET', fn: benchLset, iterScale: 1 },
+  { name: 'LTRIM', fn: benchLtrim, iterScale: 1 },
+  { name: 'RENAME', fn: benchRename, iterScale: 1 },
+  { name: 'ZCOUNT', fn: benchZcount, iterScale: 1 },
+  { name: 'ZINCRBY', fn: benchZincrby, iterScale: 1 },
+  { name: 'ZREMRANGEBYRANK', fn: benchZremrangebyrank, iterScale: 1 },
+  { name: 'ZREMRANGEBYSCORE', fn: benchZremrangebyscore, iterScale: 1 },
+  { name: 'SPOP', fn: benchSpop, iterScale: 1 },
+  { name: 'SRANDMEMBER', fn: benchSrandmember, iterScale: 1 },
   { name: 'FT.SEARCH', fn: benchFtSearch, iterScale: 1 },
 ];
 

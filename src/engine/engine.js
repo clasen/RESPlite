@@ -10,6 +10,7 @@ import { createSetsStorage } from '../storage/sqlite/sets.js';
 import { createListsStorage } from '../storage/sqlite/lists.js';
 import { createZsetsStorage } from '../storage/sqlite/zsets.js';
 import { createBlockingManager } from '../blocking/manager.js';
+import { runInTransaction } from '../storage/sqlite/tx.js';
 import { expectString, expectHash, expectSet, expectList, expectZset, typeName } from './validate.js';
 import { asKey, asValue } from '../util/buffers.js';
 
@@ -53,6 +54,15 @@ export function createEngine(opts = {}) {
       if (!meta) return null;
       expectString(meta);
       return strings.get(k);
+    },
+
+    strlen(key) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return 0;
+      expectString(meta);
+      const v = strings.get(k);
+      return v ? v.length : 0;
     },
 
     set(key, value, options = {}) {
@@ -201,6 +211,20 @@ export function createEngine(opts = {}) {
       return hashes.getAll(k);
     },
 
+    hkeys(key) {
+      const flat = this.hgetall(key);
+      const out = [];
+      for (let i = 0; i < flat.length; i += 2) out.push(flat[i]);
+      return out;
+    },
+
+    hvals(key) {
+      const flat = this.hgetall(key);
+      const out = [];
+      for (let i = 1; i < flat.length; i += 2) out.push(flat[i]);
+      return out;
+    },
+
     hdel(key, fields) {
       const k = asKey(key);
       const meta = getKeyMeta(key);
@@ -265,6 +289,22 @@ export function createEngine(opts = {}) {
       if (!meta) return 0;
       expectSet(meta);
       return sets.count(asKey(key));
+    },
+
+    spop(key, count = null) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return count != null && count !== 1 ? [] : null;
+      expectSet(meta);
+      return sets.popRandom(k, count);
+    },
+
+    srandmember(key, count = null) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return count != null && count !== 1 ? [] : null;
+      expectSet(meta);
+      return sets.getRandomMembers(k, count);
     },
 
     lpush(key, ...values) {
@@ -339,6 +379,28 @@ export function createEngine(opts = {}) {
       if (Number.isNaN(c)) throw new Error('ERR value is not an integer or out of range');
       const elem = Buffer.isBuffer(element) ? element : asValue(element);
       return lists.lrem(k, c, elem);
+    },
+
+    lset(key, index, value) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) throw new Error('ERR no such key');
+      expectList(meta);
+      const i = parseInt(Buffer.isBuffer(index) ? index.toString() : String(index), 10);
+      if (Number.isNaN(i)) throw new Error('ERR index out of range');
+      const val = Buffer.isBuffer(value) ? value : asValue(value);
+      lists.lset(k, i, val);
+    },
+
+    ltrim(key, start, stop) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return;
+      expectList(meta);
+      const s = parseInt(Buffer.isBuffer(start) ? start.toString() : String(start), 10);
+      const e = parseInt(Buffer.isBuffer(stop) ? stop.toString() : String(stop), 10);
+      if (Number.isNaN(s) || Number.isNaN(e)) return;
+      lists.ltrim(k, s, e);
     },
 
     zadd(key, scoreMemberPairs) {
@@ -423,6 +485,44 @@ export function createEngine(opts = {}) {
       });
     },
 
+    zcount(key, min, max) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return 0;
+      expectZset(meta);
+      return zsets.countByScore(k, min, max);
+    },
+
+    zincrby(key, increment, member) {
+      const k = asKey(key);
+      getKeyMeta(key);
+      const inc = parseFloat(Buffer.isBuffer(increment) ? increment.toString() : String(increment));
+      if (Number.isNaN(inc)) throw new Error('ERR value is not a valid float');
+      return zsets.incr(k, asKey(member), inc);
+    },
+
+    zremrangebyrank(key, start, stop) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return 0;
+      expectZset(meta);
+      const s = parseInt(Buffer.isBuffer(start) ? start.toString() : String(start), 10);
+      const e = parseInt(Buffer.isBuffer(stop) ? stop.toString() : String(stop), 10);
+      if (Number.isNaN(s) || Number.isNaN(e)) return 0;
+      return zsets.removeRangeByRank(k, s, e);
+    },
+
+    zremrangebyscore(key, min, max) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return 0;
+      expectZset(meta);
+      const minNum = parseFloat(Buffer.isBuffer(min) ? min.toString() : String(min));
+      const maxNum = parseFloat(Buffer.isBuffer(max) ? max.toString() : String(max));
+      if (Number.isNaN(minNum) || Number.isNaN(maxNum)) throw new Error('ERR value is not a valid float');
+      return zsets.removeRangeByScore(k, minNum, maxNum);
+    },
+
     zrevrangebyscore(key, max, min, options = {}) {
       const k = asKey(key);
       const meta = getKeyMeta(key);
@@ -457,6 +557,38 @@ export function createEngine(opts = {}) {
       const keysList = keys.scan(count, offset);
       const nextCursor = keysList.length < count ? 0 : offset + keysList.length;
       return { cursor: nextCursor, keys: keysList };
+    },
+
+    rename(key, newkey) {
+      const k = asKey(key);
+      const nk = asKey(newkey);
+      const meta = getKeyMeta(key);
+      if (!meta) throw new Error('ERR no such key');
+      if (k.equals(nk)) return;
+      runInTransaction(db, () => {
+        if (keys.get(nk)) keys.delete(nk);
+        keys.set(nk, meta.type, { expiresAt: meta.expiresAt });
+        switch (meta.type) {
+          case KEY_TYPES.STRING:
+            strings.copyKey(k, nk);
+            break;
+          case KEY_TYPES.HASH:
+            hashes.copyKey(k, nk);
+            break;
+          case KEY_TYPES.SET:
+            sets.copyKey(k, nk);
+            break;
+          case KEY_TYPES.LIST:
+            lists.copyKey(k, nk);
+            break;
+          case KEY_TYPES.ZSET:
+            zsets.copyKey(k, nk);
+            break;
+          default:
+            throw new Error('ERR unknown key type');
+        }
+        keys.delete(k);
+      });
     },
 
     // Expose for storage/commands that need direct access

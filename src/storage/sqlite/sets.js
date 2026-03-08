@@ -68,5 +68,65 @@ export function createSetsStorage(db, keys) {
       const row = countStmt.get(key);
       return row ? row.n : 0;
     },
+
+    /** Copy all members from oldKey to newKey. Caller ensures newKey exists in redis_keys. */
+    copyKey(oldKey, newKey) {
+      const rows = membersStmt.all(oldKey);
+      for (const r of rows) {
+        insertStmt.run(newKey, r.member);
+      }
+    },
+
+    /** Get random members without removing. count null/1 = single; count > 0 = up to count distinct; count < 0 = |count| with replacement. */
+    getRandomMembers(key, count) {
+      const arr = membersStmt.all(key).map((r) => r.member);
+      if (arr.length === 0) return count != null && count !== 1 ? [] : null;
+      const c = count == null ? 1 : count;
+      if (c === 1) return arr[Math.floor(Math.random() * arr.length)];
+      if (c > 0) {
+        const shuffled = arr.slice();
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        return shuffled.slice(0, Math.min(c, shuffled.length));
+      }
+      const out = [];
+      for (let i = 0; i < -c; i++) out.push(arr[Math.floor(Math.random() * arr.length)]);
+      return out;
+    },
+
+    /** Remove and return random members. Returns single member or array. */
+    popRandom(key, count, options = {}) {
+      return runInTransaction(db, () => {
+        const arr = membersStmt.all(key).map((r) => r.member);
+        if (arr.length === 0) return count != null && count !== 1 ? [] : null;
+        const c = count == null ? 1 : count;
+        let chosen;
+        if (c === 1) {
+          chosen = [arr[Math.floor(Math.random() * arr.length)]];
+        } else if (c > 0) {
+          const shuffled = arr.slice();
+          for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+          }
+          chosen = shuffled.slice(0, Math.min(c, shuffled.length));
+        } else {
+          chosen = [];
+          for (let i = 0; i < -c; i++) chosen.push(arr[Math.floor(Math.random() * arr.length)]);
+        }
+        for (const m of chosen) deleteStmt.run(key, m);
+        const row = countStmt.get(key);
+        const remaining = (row && row.n) || 0;
+        if (remaining === 0) {
+          deleteAllStmt.run(key);
+          keys.delete(key);
+        } else {
+          keys.bumpVersion(key);
+        }
+        return c === 1 ? chosen[0] : chosen;
+      });
+    },
   };
 }

@@ -103,5 +103,13 @@ export function createHashesStorage(db, keys) {
         return next;
       });
     },
+
+    /** Copy all field/value rows from oldKey to newKey. Caller ensures newKey exists in redis_keys. */
+    copyKey(oldKey, newKey) {
+      const rows = getAllStmt.all(oldKey);
+      for (let i = 0; i < rows.length; i += 2) {
+        insertStmt.run(newKey, rows[i], rows[i + 1]);
+      }
+    },
   };
 }

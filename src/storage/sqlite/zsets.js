@@ -62,6 +62,13 @@ export function createZsetsStorage(db, keys) {
      ORDER BY score DESC, member DESC
      LIMIT ? OFFSET ?`
   );
+  const selectAllStmt = db.prepare('SELECT member, score FROM redis_zsets WHERE key = ?');
+  const countByScoreStmt = db.prepare(
+    'SELECT COUNT(*) AS n FROM redis_zsets WHERE key = ? AND score >= ? AND score <= ?'
+  );
+  const deleteByScoreRangeStmt = db.prepare(
+    'DELETE FROM redis_zsets WHERE key = ? AND score >= ? AND score <= ?'
+  );
 
   return {
     /**
@@ -255,6 +262,80 @@ export function createZsetsStorage(db, keys) {
         out.push(r.member, formatScore(r.score));
       }
       return out;
+    },
+
+    /** Copy all member/score rows from oldKey to newKey. Caller ensures newKey exists in redis_keys. */
+    copyKey(oldKey, newKey) {
+      const rows = selectAllStmt.all(oldKey);
+      for (const r of rows) {
+        upsertStmt.run(newKey, r.member, r.score);
+      }
+    },
+
+    countByScore(key, min, max) {
+      const row = countByScoreStmt.get(key, min, max);
+      return row ? row.n : 0;
+    },
+
+    incr(key, member, increment, options = {}) {
+      return runInTransaction(db, () => {
+        const now = options.updatedAt ?? Date.now();
+        const meta = keys.get(key);
+        if (meta && meta.type !== KEY_TYPES.ZSET) {
+          throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value');
+        }
+        if (!meta) {
+          keys.set(key, KEY_TYPES.ZSET, { updatedAt: now });
+        } else {
+          keys.bumpVersion(key);
+        }
+        const cur = scoreStmt.get(key, member);
+        const prev = cur == null ? 0 : cur.score;
+        const next = prev + increment;
+        upsertStmt.run(key, member, next);
+        return formatScore(next);
+      });
+    },
+
+    removeRangeByRank(key, start, stop) {
+      return runInTransaction(db, () => {
+        const len = this.count(key);
+        if (len === 0) return 0;
+        let s = start >= 0 ? start : Math.max(0, len + start);
+        let e = stop >= 0 ? stop : Math.max(0, len + stop);
+        if (s > e) return 0;
+        s = Math.min(s, len - 1);
+        e = Math.min(e, len - 1);
+        const limit = e - s + 1;
+        const offset = s;
+        const rows = rangeByRankStmt.all(key, limit, offset);
+        let n = 0;
+        for (const r of rows) {
+          n += deleteStmt.run(key, r.member).changes;
+        }
+        const row = countStmt.get(key);
+        const remaining = (row && row.n) || 0;
+        if (remaining === 0) {
+          deleteAllStmt.run(key);
+          keys.delete(key);
+        }
+        return n;
+      });
+    },
+
+    removeRangeByScore(key, min, max) {
+      return runInTransaction(db, () => {
+        const r = deleteByScoreRangeStmt.run(key, min, max);
+        const remaining = countStmt.get(key);
+        const n = (remaining && remaining.n) || 0;
+        if (n === 0) {
+          deleteAllStmt.run(key);
+          keys.delete(key);
+        } else if (r.changes > 0) {
+          keys.bumpVersion(key);
+        }
+        return r.changes;
+      });
     },
   };
 }

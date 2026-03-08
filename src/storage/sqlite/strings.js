@@ -59,5 +59,13 @@ export function createStringsStorage(db, keys) {
         keys.delete(key);
       });
     },
+
+    /**
+     * Copy key's value to newKey. Caller must ensure newKey row exists in redis_keys.
+     */
+    copyKey(oldKey, newKey) {
+      const row = getStmt.get(oldKey);
+      if (row) insertStmt.run(newKey, row.value);
+    },
   };
 }

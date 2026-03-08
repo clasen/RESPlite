@@ -41,6 +41,15 @@ export function createListsStorage(db, keys) {
     'SELECT seq, value FROM redis_list_items WHERE key = ? ORDER BY seq ASC'
   );
   const deleteAllItemsStmt = db.prepare('DELETE FROM redis_list_items WHERE key = ?');
+  const updateItemStmt = db.prepare(
+    'UPDATE redis_list_items SET value = ? WHERE key = ? AND seq = ?'
+  );
+  const deleteBeforeSeqStmt = db.prepare(
+    'DELETE FROM redis_list_items WHERE key = ? AND seq < ?'
+  );
+  const deleteAfterSeqStmt = db.prepare(
+    'DELETE FROM redis_list_items WHERE key = ? AND seq > ?'
+  );
 
   function getMeta(key) {
     return getMetaStmt.get(key) || null;
@@ -278,6 +287,57 @@ export function createListsStorage(db, keys) {
 
         return toDelete.length;
       });
+    },
+
+    lset(key, index, value) {
+      return runInTransaction(db, () => {
+        const meta = getMeta(key);
+        const len = length(meta);
+        if (len === 0) throw new Error('ERR no such key');
+        const idx = parseInt(String(index), 10);
+        if (Number.isNaN(idx)) throw new Error('ERR index out of range');
+        const i = idx < 0 ? len + idx : idx;
+        if (i < 0 || i >= len) throw new Error('ERR index out of range');
+        const seq = meta.headSeq + i;
+        const r = updateItemStmt.run(value, key, seq);
+        if (r.changes === 0) throw new Error('ERR index out of range');
+        keys.bumpVersion(key);
+      });
+    },
+
+    ltrim(key, start, stop) {
+      return runInTransaction(db, () => {
+        const meta = getMeta(key);
+        const len = length(meta);
+        if (len === 0) return;
+
+        let s = start < 0 ? Math.max(0, len + start) : Math.min(start, len - 1);
+        let e = stop < 0 ? Math.max(0, len + stop) : Math.min(stop, len - 1);
+        if (s > e) {
+          deleteAllItemsStmt.run(key);
+          deleteMetaStmt.run(key);
+          keys.delete(key);
+          return;
+        }
+
+        const newHead = meta.headSeq + s;
+        const newTail = meta.headSeq + e;
+        deleteBeforeSeqStmt.run(key, newHead);
+        deleteAfterSeqStmt.run(key, newTail);
+        updateMetaStmt.run(newHead, newTail, key);
+        keys.bumpVersion(key);
+      });
+    },
+
+    /** Copy list from oldKey to newKey. Caller ensures newKey exists in redis_keys. */
+    copyKey(oldKey, newKey) {
+      const meta = getMeta(oldKey);
+      if (!meta) return;
+      insertMetaStmt.run(newKey, meta.headSeq, meta.tailSeq);
+      const rows = selectAllWithSeqStmt.all(oldKey);
+      for (const r of rows) {
+        insertItemStmt.run(newKey, r.seq, r.value);
+      }
     },
   };
 }
