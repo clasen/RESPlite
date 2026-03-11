@@ -141,7 +141,6 @@ await m.startDirtyTracker({
 // Step 1 — Bulk import (checkpointed, resumable). Same script to start or continue.
 // Use keyCountEstimate from preflight to compute ETA/progress during bulk.
 await m.bulk({
-  resume: true, 
   estimatedTotalKeys: info.keyCountEstimate,
   onProgress: (r) => {
     const pct = r.progress_pct != null ? r.progress_pct.toFixed(1) : '—';
