@@ -107,6 +107,8 @@ const m = createMigration({
   batchKeys:      1000,
   batchBytes:     64 * 1024 * 1024,  // 64 MB
   maxRps:         0,                  // 0 = unlimited
+  concurrency:    8,                  // parallel key imports during bulk
+  // estimatedTotalKeys: info.keyCountEstimate, // optional ETA baseline (can also be set per bulk call)
 
   // If your Redis deployment renamed CONFIG for security:
   // configCommand: 'MYCONFIG',
@@ -137,14 +139,15 @@ await m.startDirtyTracker({
 });
 
 // Step 1 — Bulk import (checkpointed, resumable). Same script to start or continue.
-// Use keyCountEstimate from preflight to show progress % (estimate; actual count may change).
-const total = info.keyCountEstimate || 1;
+// Use keyCountEstimate from preflight to compute ETA/progress during bulk.
 await m.bulk({
   resume: true, 
+  estimatedTotalKeys: info.keyCountEstimate,
   onProgress: (r) => {
-    const pct = total ? ((r.scanned_keys / total) * 100).toFixed(1) : '—';
+    const pct = r.progress_pct != null ? r.progress_pct.toFixed(1) : '—';
+    const eta = r.eta_seconds != null ? `${r.eta_seconds}s` : '—';
     console.log(
-      `scanned=${r.scanned_keys} migrated=${r.migrated_keys} errors=${r.error_keys} progress=${pct}%`
+      `scanned=${r.scanned_keys} migrated=${r.migrated_keys} errors=${r.error_keys} progress=${pct}% eta=${eta} rate=${r.keys_per_second.toFixed(1)} keys/s`
     );
   },
 });

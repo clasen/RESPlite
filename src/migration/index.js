@@ -36,6 +36,8 @@ import { startDirtyTracker as startDirtyTrackerProcess } from './tracker.js';
  * @property {string} [pragmaTemplate='default']      - PRAGMA preset.
  * @property {number} [scanCount=1000]
  * @property {number} [maxRps=0]                      - Max requests/s (0 = unlimited).
+ * @property {number} [concurrency=1]                 - Concurrent imports during bulk migration.
+ * @property {number} [estimatedTotalKeys=0]          - Optional total-keys estimate for ETA/progress in onProgress.
  * @property {number} [batchKeys=200]
  * @property {number} [batchBytes=67108864]           - 64 MB default.
  * @property {string} [configCommand='CONFIG']        - Redis CONFIG command name. Override if renamed for security.
@@ -65,6 +67,8 @@ export function createMigration({
   pragmaTemplate = 'default',
   scanCount = 1000,
   maxRps = 0,
+  concurrency = 1,
+  estimatedTotalKeys = 0,
   batchKeys = 200,
   batchBytes = 64 * 1024 * 1024,
   configCommand = 'CONFIG',
@@ -156,9 +160,17 @@ export function createMigration({
      * Step 1 — Bulk import: SCAN all keys from Redis into the destination DB.
      * Resume is on by default: first run starts from 0, later runs continue from checkpoint.
      *
-     * @param {{ resume?: boolean, onProgress?: (run: object) => void }} [opts] - resume (default true): start or continue automatically
+     * @param {{ resume?: boolean, concurrency?: number, estimatedTotalKeys?: number, onProgress?: (run: object) => void }} [opts]
+     *   - `resume` (default true): start or continue automatically
+     *   - `concurrency` (default from createMigration options): concurrent key imports
+     *   - `estimatedTotalKeys` (optional): used to compute ETA/progress fields in onProgress
      */
-    async bulk({ resume = true, onProgress } = {}) {
+    async bulk({
+      resume = true,
+      concurrency: c = concurrency,
+      estimatedTotalKeys: et = estimatedTotalKeys,
+      onProgress,
+    } = {}) {
       const id = requireRunId();
       const client = await getClient();
       return runBulkImport(client, to, id, {
@@ -166,6 +178,8 @@ export function createMigration({
         pragmaTemplate,
         scan_count: scanCount,
         max_rps: maxRps,
+        concurrency: c,
+        estimated_total_keys: et,
         batch_keys: batchKeys,
         batch_bytes: batchBytes,
         resume,

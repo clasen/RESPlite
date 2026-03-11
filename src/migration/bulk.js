@@ -35,6 +35,27 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function buildProgressPayload(run, startTimeMs, estimatedTotalKeys) {
+  if (!run) return null;
+  const scanned = Number(run.scanned_keys || 0);
+  const elapsedSec = Math.max(0.001, (Date.now() - startTimeMs) / 1000);
+  const keysPerSec = scanned / elapsedSec;
+  const hasEstimate = Number.isFinite(estimatedTotalKeys) && estimatedTotalKeys > 0;
+  const remainingKeys = hasEstimate ? Math.max(0, estimatedTotalKeys - scanned) : null;
+  const etaSeconds = hasEstimate && keysPerSec > 0 ? Math.ceil(remainingKeys / keysPerSec) : null;
+  const progressPct = hasEstimate ? Math.min(100, (scanned / estimatedTotalKeys) * 100) : null;
+
+  return {
+    ...run,
+    elapsed_seconds: elapsedSec,
+    keys_per_second: keysPerSec,
+    estimated_total_keys: hasEstimate ? estimatedTotalKeys : null,
+    remaining_keys_estimate: remainingKeys,
+    eta_seconds: etaSeconds,
+    progress_pct: progressPct,
+  };
+}
+
 /**
  * Run bulk import: SCAN keys from Redis, import into RespLite DB with checkpointing.
  * On SIGINT/SIGTERM, checkpoint progress, set run status to ABORTED, close DB and rethrow.
@@ -48,6 +69,8 @@ function sleep(ms) {
  * @param {string} [options.pragmaTemplate='default']
  * @param {number} [options.scan_count=1000]
  * @param {number} [options.max_rps=0] - 0 = no limit
+ * @param {number} [options.concurrency=1] - Number of concurrent key imports
+ * @param {number} [options.estimated_total_keys=0] - Optional key count estimate used for ETA/progress
  * @param {number} [options.batch_keys=200]
  * @param {number} [options.batch_bytes=64*1024*1024] - 64MB
  * @param {number} [options.checkpoint_interval_sec=30]
@@ -60,6 +83,8 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
     pragmaTemplate = 'default',
     scan_count = 1000,
     max_rps = 0,
+    concurrency = 1,
+    estimated_total_keys = 0,
     batch_keys = 200,
     batch_bytes = 64 * 1024 * 1024,
     checkpoint_interval_sec = 30,
@@ -100,10 +125,22 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
     }
 
     let lastCheckpointTime = Date.now();
+    const startedAtMs = lastCheckpointTime;
     let batchScanned = 0;
     let batchBytes = 0;
     const minIntervalMs = max_rps > 0 ? 1000 / max_rps : 0;
-    let lastKeyTime = 0;
+    const workerCount = Number.isFinite(concurrency) ? Math.max(1, Math.floor(concurrency)) : 1;
+    let nextAllowedAt = 0;
+
+    async function awaitRateLimit() {
+      if (minIntervalMs <= 0) return;
+      const now = Date.now();
+      const scheduled = Math.max(now, nextAllowedAt);
+      nextAllowedAt = scheduled + minIntervalMs;
+      if (scheduled > now) {
+        await sleep(scheduled - now);
+      }
+    }
 
     outer: do {
       run = getRun(db, runId);
@@ -119,7 +156,7 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
       cursor = parsed.cursor;
       const keyList = parsed.keys || [];
 
-      for (const keyName of keyList) {
+      for (let i = 0; i < keyList.length; i += workerCount) {
         if (abortRequested) break outer;
         run = getRun(db, runId);
         if (run && run.status === RUN_STATUS.ABORTED) break outer;
@@ -128,46 +165,50 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
           run = getRun(db, runId);
         }
 
-        scanned_keys++;
-        if (minIntervalMs > 0) {
-          const elapsed = Date.now() - lastKeyTime;
-          if (elapsed < minIntervalMs) await sleep(minIntervalMs - elapsed);
-          lastKeyTime = Date.now();
-        }
+        const chunk = keyList.slice(i, i + workerCount);
+        const results = await Promise.all(
+          chunk.map(async (keyName) => {
+            await awaitRateLimit();
+            const now = Date.now();
+            const outcome = await importKeyFromRedis(redisClient, keyName, storages, { now });
+            return { keyName, outcome };
+          })
+        );
 
-        const now = Date.now();
-        const outcome = await importKeyFromRedis(redisClient, keyName, storages, { now });
-        if (outcome.ok) {
-          migrated_keys++;
-          migrated_bytes += outcome.bytes || 0;
-          batchScanned++;
-          batchBytes += outcome.bytes || 0;
-        } else if (outcome.skipped) {
-          skipped_keys++;
-        } else {
-          error_keys++;
-          logError(db, runId, 'bulk', outcome.error ? 'Import failed' : 'Skipped', keyName);
-        }
+        for (const { keyName, outcome } of results) {
+          scanned_keys++;
+          if (outcome.ok) {
+            migrated_keys++;
+            migrated_bytes += outcome.bytes || 0;
+            batchScanned++;
+            batchBytes += outcome.bytes || 0;
+          } else if (outcome.skipped) {
+            skipped_keys++;
+          } else {
+            error_keys++;
+            logError(db, runId, 'bulk', outcome.error ? 'Import failed' : 'Skipped', keyName);
+          }
 
-        const now2 = Date.now();
-        const shouldCheckpoint =
-          batchScanned >= batch_keys ||
-          batchBytes >= batch_bytes ||
-          now2 - lastCheckpointTime >= checkpoint_interval_sec * 1000;
-        if (shouldCheckpoint) {
-          updateBulkProgress(db, runId, {
-            scan_cursor: String(cursor),
-            scanned_keys,
-            migrated_keys,
-            skipped_keys,
-            error_keys,
-            migrated_bytes,
-          });
-          lastCheckpointTime = now2;
-          batchScanned = 0;
-          batchBytes = 0;
-          run = getRun(db, runId);
-          if (onProgress && run) onProgress(run);
+          const now2 = Date.now();
+          const shouldCheckpoint =
+            batchScanned >= batch_keys ||
+            batchBytes >= batch_bytes ||
+            now2 - lastCheckpointTime >= checkpoint_interval_sec * 1000;
+          if (shouldCheckpoint) {
+            updateBulkProgress(db, runId, {
+              scan_cursor: String(cursor),
+              scanned_keys,
+              migrated_keys,
+              skipped_keys,
+              error_keys,
+              migrated_bytes,
+            });
+            lastCheckpointTime = now2;
+            batchScanned = 0;
+            batchBytes = 0;
+            run = getRun(db, runId);
+            if (onProgress && run) onProgress(buildProgressPayload(run, startedAtMs, estimated_total_keys));
+          }
         }
       }
     } while (cursor !== 0);
@@ -183,7 +224,7 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
       });
       setRunStatus(db, runId, RUN_STATUS.ABORTED);
       run = getRun(db, runId);
-      if (onProgress && run) onProgress(run);
+      if (onProgress && run) onProgress(buildProgressPayload(run, startedAtMs, estimated_total_keys));
       const err = new Error('Bulk import interrupted by signal (SIGINT/SIGTERM)');
       err.code = 'BULK_ABORTED';
       throw err;
@@ -198,7 +239,9 @@ export async function runBulkImport(redisClient, dbPath, runId, options = {}) {
       migrated_bytes,
     });
     setRunStatus(db, runId, RUN_STATUS.COMPLETED);
-    return getRun(db, runId);
+    run = getRun(db, runId);
+    if (onProgress && run) onProgress(buildProgressPayload(run, startedAtMs, estimated_total_keys));
+    return run;
   } catch (err) {
     if (err.code !== 'BULK_ABORTED') {
       setRunStatus(db, runId, RUN_STATUS.FAILED);
