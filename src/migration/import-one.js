@@ -14,16 +14,35 @@ function toBuffer(value) {
   return Buffer.from(String(value), 'utf8');
 }
 
+function parseZscanResult(raw) {
+  if (!Array.isArray(raw) || raw.length < 2) {
+    return { cursor: 0, entries: [] };
+  }
+  const cursor = parseInt(String(raw[0] ?? '0'), 10) || 0;
+  const flat = Array.isArray(raw[1]) ? raw[1] : [];
+  const entries = [];
+  for (let i = 0; i < flat.length; i += 2) {
+    const member = flat[i];
+    const score = flat[i + 1];
+    if (member == null || score == null) continue;
+    entries.push({ value: member, score: Number(score) });
+  }
+  return { cursor, entries };
+}
+
 /**
  * Fetch one key from Redis and write to storages. Idempotent (upsert).
  * @param {import('redis').RedisClientType} redisClient
  * @param {string} keyName
  * @param {{ keys: import('../storage/sqlite/keys.js').ReturnType<import('../storage/sqlite/keys.js').createKeysStorage>; strings: ReturnType<import('../storage/sqlite/strings.js').createStringsStorage>; hashes: ReturnType<import('../storage/sqlite/hashes.js').createHashesStorage>; sets: ReturnType<import('../storage/sqlite/sets.js').createSetsStorage>; lists: ReturnType<import('../storage/sqlite/lists.js').createListsStorage>; zsets: ReturnType<import('../storage/sqlite/zsets.js').createZsetsStorage> }} storages
- * @param {{ now?: number }} options
+ * @param {{ now?: number, zsetScanCount?: number }} options
  * @returns {Promise<{ ok: boolean; skipped?: boolean; error?: boolean; bytes?: number }>}
  */
 export async function importKeyFromRedis(redisClient, keyName, storages, options = {}) {
   const now = options.now ?? Date.now();
+  const zsetScanCount = Number.isFinite(options.zsetScanCount)
+    ? Math.max(10, Math.floor(options.zsetScanCount))
+    : 1000;
   const { keys, strings, hashes, sets, lists, zsets } = storages;
 
   try {
@@ -85,16 +104,46 @@ export async function importKeyFromRedis(redisClient, keyName, storages, options
     }
 
     if (type === 'zset') {
-      const withScores = await redisClient.zRangeWithScores(keyName, 0, -1);
-      if (!withScores || !withScores.length) return { ok: false, skipped: true };
-      const pairs = withScores.map((item) => ({
-        member: toBuffer(item.value),
-        score: Number(item.score),
-      }));
-      for (const p of pairs) bytes += p.member.length + 8;
-      zsets.add(keyBuf, pairs, { updatedAt: now });
-      keys.setExpires(keyBuf, expiresAt, now);
-      return { ok: true, bytes };
+      try {
+        // Use cursor-based reads to avoid loading very large sorted sets in one call.
+        let cursor = 0;
+        let wroteAny = false;
+        do {
+          const raw = await redisClient.sendCommand([
+            'ZSCAN',
+            keyName,
+            String(cursor),
+            'COUNT',
+            String(zsetScanCount),
+          ]);
+          const parsed = parseZscanResult(raw);
+          cursor = parsed.cursor;
+          if (parsed.entries.length === 0) continue;
+          const pairs = parsed.entries.map((item) => ({
+            member: toBuffer(item.value),
+            score: Number(item.score),
+          }));
+          for (const p of pairs) bytes += p.member.length + 8;
+          zsets.add(keyBuf, pairs, { updatedAt: now });
+          wroteAny = true;
+        } while (cursor !== 0);
+
+        if (!wroteAny) return { ok: false, skipped: true };
+        keys.setExpires(keyBuf, expiresAt, now);
+        return { ok: true, bytes };
+      } catch {
+        // Fallback for clients/backends without command passthrough support.
+        const withScores = await redisClient.zRangeWithScores(keyName, 0, -1);
+        if (!withScores || !withScores.length) return { ok: false, skipped: true };
+        const pairs = withScores.map((item) => ({
+          member: toBuffer(item.value),
+          score: Number(item.score),
+        }));
+        for (const p of pairs) bytes += p.member.length + 8;
+        zsets.add(keyBuf, pairs, { updatedAt: now });
+        keys.setExpires(keyBuf, expiresAt, now);
+        return { ok: true, bytes };
+      }
     }
 
     return { ok: false, skipped: true };
