@@ -24,6 +24,7 @@ const DEFAULT_PORT = 6379;
  * @param {number} [options.port]
  * @param {string} [options.dbPath]
  * @param {string} [options.pragmaTemplate]
+ * @param {Record<string, string|number>} [options.pragma] Override specific pragmas when needed (e.g. { synchronous: 'FULL' }). Convention: template is applied by default.
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to close server and DB. Set false if you handle shutdown yourself.
  */
 export function startServer(options = {}) {
@@ -32,7 +33,7 @@ export function startServer(options = {}) {
   const pragmaTemplate = options.pragmaTemplate ?? process.env.RESPLITE_PRAGMA_TEMPLATE ?? 'default';
   const gracefulShutdown = options.gracefulShutdown !== false;
 
-  const db = openDb(dbPath, { pragmaTemplate });
+  const db = openDb(dbPath, { pragmaTemplate, pragma: options.pragma });
   const cache = createCache({ enabled: true });
   const engine = createEngine({ db, cache });
   const sweeper = createExpirationSweeper({

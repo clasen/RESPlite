@@ -12,7 +12,7 @@ import { applyMigrationSchema } from './migration-schema.js';
 
 /**
  * @param {string} dbPath - Database file path (or ':memory:')
- * @param {object} [options] - Options: pragmaTemplate (default|performance|safety|minimal), plus any better-sqlite3 options
+ * @param {object} [options] - Options: pragmaTemplate (default|performance|safety|minimal), pragma (custom key-value overrides), plus any better-sqlite3 options
  * @returns {import('better-sqlite3').Database}
  */
 export function openDb(dbPath, options = {}) {
@@ -20,9 +20,9 @@ export function openDb(dbPath, options = {}) {
     const dir = path.dirname(dbPath);
     if (dir) fs.mkdirSync(dir, { recursive: true });
   }
-  const { pragmaTemplate = 'default', ...dbOptions } = options;
+  const { pragmaTemplate = 'default', pragma: customPragma, ...dbOptions } = options;
   const db = new Database(dbPath, dbOptions);
-  applyPragmas(db, pragmaTemplate);
+  applyPragmas(db, pragmaTemplate, customPragma);
   applySchema(db);
   applyMigrationSchema(db);
   return db;

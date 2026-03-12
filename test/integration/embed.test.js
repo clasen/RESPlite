@@ -89,6 +89,17 @@ describe('createRESPlite', () => {
     await srv.close();
   });
 
+  it('accepts pragma overrides (convention: template first, overrides only when needed)', async () => {
+    const srv = await createRESPlite({
+      pragma: { synchronous: 'FULL', cache_size: -10_000 },
+    });
+    const client = await redisClient(srv.port);
+    await client.set('k', 'v');
+    assert.equal(await client.get('k'), 'v');
+    await client.quit();
+    await srv.close();
+  });
+
   it('unsupported command still returns ERR command not supported yet to client', async () => {
     const srv = await createRESPlite();
     const client = await redisClient(srv.port);

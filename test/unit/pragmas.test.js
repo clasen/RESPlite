@@ -72,4 +72,28 @@ describe('Pragma templates', () => {
       db.close();
     }
   });
+
+  it('openDb with pragma overrides applies them after the template', () => {
+    const path = tmpDbPath();
+    const db = openDb(path, { pragmaTemplate: 'default', pragma: { synchronous: 'FULL' } });
+    try {
+      const row = db.prepare('PRAGMA synchronous').get();
+      assert.equal(row.synchronous, 2); // FULL = 2
+    } finally {
+      db.close();
+    }
+  });
+
+  it('openDb with pragma cache_size override (e.g. 1 GiB)', () => {
+    const path = tmpDbPath();
+    const oneGibKib = 1024 * 1024;
+    const db = openDb(path, { pragmaTemplate: 'default', pragma: { cache_size: -oneGibKib } });
+    try {
+      const row = db.prepare('PRAGMA cache_size').get();
+      // SQLite returns cache size in KiB when it was set negative
+      assert.equal(Math.abs(row.cache_size), oneGibKib);
+    } finally {
+      db.close();
+    }
+  });
 });

@@ -33,7 +33,8 @@ export { handleConnection, createEngine, openDb };
  * @param {string} [options.db=':memory:']        SQLite file path, or ':memory:' for in-memory.
  * @param {string} [options.host='127.0.0.1']     Host to listen on.
  * @param {number} [options.port=0]               Port to listen on (0 = OS-assigned).
- * @param {string} [options.pragmaTemplate='default'] PRAGMA preset (default|performance|safety|minimal|none).
+ * @param {string} [options.pragmaTemplate='default'] PRAGMA preset (default|performance|safety|minimal|none). Convention: this template is applied by default; no config needed.
+ * @param {Record<string, string|number>} [options.pragma] Override specific pragmas only when needed (e.g. { synchronous: 'FULL' }). Applied after the template.
  * @param {RESPliteHooks} [options.hooks]         Optional event hooks for observability (onUnknownCommand, onCommandError, onSocketError).
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to call close(). Set false if you handle shutdown yourself to avoid double handlers.
  * @returns {Promise<{ port: number, host: string, close: () => Promise<void> }>}
@@ -43,10 +44,11 @@ export async function createRESPlite({
   host = '127.0.0.1',
   port = 0,
   pragmaTemplate = 'default',
+  pragma,
   hooks = {},
   gracefulShutdown = true,
 } = {}) {
-  const db = openDb(dbPath, { pragmaTemplate });
+  const db = openDb(dbPath, { pragmaTemplate, pragma });
   const engine = createEngine({ db });
   const connections = new Set();
 

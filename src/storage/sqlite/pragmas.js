@@ -69,13 +69,29 @@ export function getPragmasForTemplate(name) {
 }
 
 /**
- * Apply pragmas from a named template to an open database.
+ * Apply custom pragma key-value object to an open database.
+ * @param {import('better-sqlite3').Database} db
+ * @param {Record<string, string|number>} obj - e.g. { journal_mode: 'WAL', cache_size: -64000 }
+ */
+function applyPragmaObject(db, obj) {
+  for (const [key, val] of Object.entries(obj)) {
+    if (val === undefined) continue;
+    db.exec(`PRAGMA ${key}=${val};`);
+  }
+}
+
+/**
+ * Apply pragmas from a named template and optional overrides to an open database.
  * @param {import('better-sqlite3').Database} db
  * @param {string} [templateName='default'] - One of: default, performance, safety, minimal, none
+ * @param {Record<string, string|number>} [customPragma] - Optional overrides, e.g. { synchronous: 'FULL', cache_size: -10000 }
  */
-export function applyPragmas(db, templateName = 'default') {
+export function applyPragmas(db, templateName = 'default', customPragma = undefined) {
   const pragmas = getPragmasForTemplate(templateName);
   for (const sql of pragmas) {
     db.exec(sql);
+  }
+  if (customPragma && typeof customPragma === 'object' && Object.keys(customPragma).length > 0) {
+    applyPragmaObject(db, customPragma);
   }
 }

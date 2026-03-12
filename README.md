@@ -517,15 +517,26 @@ redis-cli -p 6380 PING
 | `RESPLITE_DB` | `./data.db` | SQLite database file |
 | `RESPLITE_PRAGMA_TEMPLATE` | `default` | SQLite PRAGMA preset (see below) |
 
-### PRAGMA templates
+### PRAGMA (convention over configuration)
+
+A **template** is applied by default (`default`); you usually don't pass anything. Only pass **overrides** when you need to change specific pragmas.
 
 | Template | Description | Key settings |
-|---|---|---|
+|----------|-------------|--------------|
 | `default` | Balanced durability and speed (recommended) | WAL, synchronous=NORMAL, 20 MB cache |
 | `performance` | Maximum throughput, reduced crash safety | WAL, synchronous=OFF, 64 MB cache, 512 MB mmap, exclusive locking |
 | `safety` | Crash-safe writes at the cost of speed | WAL, synchronous=FULL, 20 MB cache |
 | `minimal` | Only WAL + foreign keys | WAL, foreign_keys=ON |
 | `none` | No pragmas applied, pure SQLite defaults | - |
+
+Override specific pragmas only when needed. Overrides are applied after the template. Example — 1 GB cache:
+
+```javascript
+const srv = await createRESPlite({
+  db: './data.db',
+  pragma: { cache_size: -1024 * 1024 },  // negative = KiB, so 1 GiB
+});
+```
 
 ## Benchmark (Redis vs RESPLite)
 
