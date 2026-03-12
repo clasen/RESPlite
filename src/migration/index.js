@@ -36,7 +36,7 @@ import { startDirtyTracker as startDirtyTrackerProcess } from './tracker.js';
  * @property {string} [pragmaTemplate='default']      - PRAGMA preset.
  * @property {number} [scanCount=1000]
  * @property {number} [maxRps=0]                      - Max requests/s (0 = unlimited).
- * @property {number} [concurrency=1]                 - Concurrent imports during bulk migration.
+ * @property {number} [concurrency=1]                 - Concurrent imports during bulk/apply-dirty migration.
  * @property {number} [estimatedTotalKeys=0]          - Optional total-keys estimate for ETA/progress in onProgress.
  * @property {number} [batchKeys=200]
  * @property {number} [batchBytes=67108864]           - 64 MB default.
@@ -54,7 +54,7 @@ import { startDirtyTracker as startDirtyTrackerProcess } from './tracker.js';
  *   stopDirtyTracker(): Promise<{ running: false }>,
  *   bulk(opts?: { resume?: boolean, onProgress?: function }): Promise<object>,
  *   status(): { run: object, dirty: object } | null,
- *   applyDirty(opts?: { batchKeys?: number, maxRps?: number, onProgress?: function }): Promise<object>,
+ *   applyDirty(opts?: { batchKeys?: number, maxRps?: number, concurrency?: number, progressIntervalMs?: number, onProgress?: function }): Promise<object>,
  *   verify(opts?: { samplePct?: number, maxSample?: number }): Promise<object>,
  *   migrateSearch(opts?: { onlyIndices?: string[], scanCount?: number, maxRps?: number, batchDocs?: number, maxSuggestions?: number, skipExisting?: boolean, withSuggestions?: boolean, onProgress?: function }): Promise<object>,
  *   close(): Promise<void>,
@@ -205,15 +205,23 @@ export function createMigration({
     /**
      * Step 3 — Apply dirty: reconcile keys that changed in Redis during bulk import.
      *
-     * @param {{ batchKeys?: number, maxRps?: number, onProgress?: (run: object) => void }} [opts]
+     * @param {{ batchKeys?: number, maxRps?: number, concurrency?: number, progressIntervalMs?: number, onProgress?: (run: object) => void }} [opts]
      */
-    async applyDirty({ batchKeys: bk = batchKeys, maxRps: rps = maxRps, onProgress } = {}) {
+    async applyDirty({
+      batchKeys: bk = batchKeys,
+      maxRps: rps = maxRps,
+      concurrency: c = concurrency,
+      progressIntervalMs: pim = 2000,
+      onProgress,
+    } = {}) {
       const id = requireRunId();
       const client = await getClient();
       return runApplyDirty(client, to, id, {
         pragmaTemplate,
         batch_keys: bk,
         max_rps: rps,
+        concurrency: c,
+        progress_interval_ms: pim,
         onProgress,
       });
     },

@@ -166,7 +166,17 @@ await rl.question('Stop app traffic to Redis, then press Enter to apply the fina
 rl.close();
 
 // Step 3 — Apply dirty keys that changed in Redis during bulk
-await m.applyDirty({ onProgress: console.log });
+await m.applyDirty({
+  concurrency: 32,
+  batchKeys: 5000,
+  onProgress: (r) => {
+    console.log(
+      `dirty processed=${r.dirty_keys_processed} pending=${r.dirty_pending} ` +
+      `applied=${r.dirty_keys_applied} deleted=${r.dirty_keys_deleted} ` +
+      `rate=${r.dirty_keys_per_second.toFixed(1)} keys/s eta=${r.dirty_eta_seconds ?? '—'}s`
+    );
+  },
+});
 
 // Step 3b — Stop tracker after cutover
 await m.stopDirtyTracker();
