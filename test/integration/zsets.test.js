@@ -159,6 +159,37 @@ describe('ZSET integration', () => {
     assert.equal(limited[1].toString('utf8'), 'c');
   });
 
+  it('ZCOUNT supports numeric ranges and full-range infinities', async () => {
+    await sendCommand(port, argv('ZADD', 'zc1', '1', 'a', '2', 'b', '3', 'c', '4', 'd'));
+
+    const mid = await sendCommand(port, argv('ZCOUNT', 'zc1', '2', '3'));
+    assert.equal(tryParseValue(mid, 0).value, 2);
+
+    const all = await sendCommand(port, argv('ZCOUNT', 'zc1', '-inf', '+inf'));
+    assert.equal(tryParseValue(all, 0).value, 4);
+  });
+
+  it('score-range commands accept -inf/+inf bounds', async () => {
+    await sendCommand(port, argv('ZADD', 'zinf', '1', 'a', '2', 'b', '3', 'c', '4', 'd'));
+
+    const rangeAll = await sendCommand(port, argv('ZRANGEBYSCORE', 'zinf', '-inf', '+inf'));
+    const rAll = tryParseValue(rangeAll, 0).value;
+    assert.equal(rAll.length, 4);
+    assert.equal(rAll[0].toString('utf8'), 'a');
+    assert.equal(rAll[3].toString('utf8'), 'd');
+
+    const revAll = await sendCommand(port, argv('ZREVRANGEBYSCORE', 'zinf', '+inf', '-inf'));
+    const rvAll = tryParseValue(revAll, 0).value;
+    assert.equal(rvAll.length, 4);
+    assert.equal(rvAll[0].toString('utf8'), 'd');
+    assert.equal(rvAll[3].toString('utf8'), 'a');
+
+    const removed = await sendCommand(port, argv('ZREMRANGEBYSCORE', 'zinf', '-inf', '+inf'));
+    assert.equal(tryParseValue(removed, 0).value, 4);
+    const card = await sendCommand(port, argv('ZCARD', 'zinf'));
+    assert.equal(tryParseValue(card, 0).value, 0);
+  });
+
   it('ZCARD non-existent returns 0, ZSCORE non-existent returns nil', async () => {
     const cardReply = await sendCommand(port, argv('ZCARD', 'nonexistent_z'));
     assert.equal(tryParseValue(cardReply, 0).value, 0);

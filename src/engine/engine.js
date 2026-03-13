@@ -569,6 +569,7 @@ export function createEngine(opts = {}) {
         if (keys.get(nk)) keys.delete(nk);
         keys.set(nk, meta.type, {
           expiresAt: meta.expiresAt,
+          setCount: meta.type === KEY_TYPES.SET ? meta.setCount : undefined,
           hashCount: meta.type === KEY_TYPES.HASH ? meta.hashCount : undefined,
           zsetCount: meta.type === KEY_TYPES.ZSET ? meta.zsetCount : undefined,
         });

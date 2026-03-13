@@ -315,6 +315,9 @@ export function createZsetsStorage(db, keys) {
     },
 
     countByScore(key, min, max) {
+      if (min === Number.NEGATIVE_INFINITY && max === Number.POSITIVE_INFINITY) {
+        return this.count(key);
+      }
       const row = countByScoreStmt.get(key, min, max);
       return row ? row.n : 0;
     },

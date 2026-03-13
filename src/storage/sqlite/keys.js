@@ -9,16 +9,22 @@ import { KEY_TYPES } from './schema.js';
  */
 export function createKeysStorage(db) {
   const getByKey = db.prepare(
-    'SELECT key, type, expires_at AS expiresAt, hash_count AS hashCount, zset_count AS zsetCount, version, updated_at AS updatedAt FROM redis_keys WHERE key = ?'
+    'SELECT key, type, expires_at AS expiresAt, set_count AS setCount, hash_count AS hashCount, zset_count AS zsetCount, version, updated_at AS updatedAt FROM redis_keys WHERE key = ?'
   );
   const insert = db.prepare(
-    `INSERT INTO redis_keys (key, type, expires_at, hash_count, zset_count, version, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)`
+    `INSERT INTO redis_keys (key, type, expires_at, set_count, hash_count, zset_count, version, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
   );
   const updateMeta = db.prepare(
-    'UPDATE redis_keys SET type = ?, expires_at = ?, hash_count = ?, zset_count = ?, version = version + 1, updated_at = ? WHERE key = ?'
+    'UPDATE redis_keys SET type = ?, expires_at = ?, set_count = ?, hash_count = ?, zset_count = ?, version = version + 1, updated_at = ? WHERE key = ?'
   );
   const updateExpires = db.prepare('UPDATE redis_keys SET expires_at = ?, updated_at = ? WHERE key = ?');
   const updateVersion = db.prepare('UPDATE redis_keys SET version = version + 1, updated_at = ? WHERE key = ?');
+  const updateSetCount = db.prepare('UPDATE redis_keys SET set_count = ?, updated_at = ? WHERE key = ?');
+  const updateSetCountOnly = db.prepare('UPDATE redis_keys SET set_count = ? WHERE key = ?');
+  const incrSetCount = db.prepare(
+    'UPDATE redis_keys SET set_count = COALESCE(set_count, 0) + ?, updated_at = ? WHERE key = ?'
+  );
+  const incrSetCountOnly = db.prepare('UPDATE redis_keys SET set_count = COALESCE(set_count, 0) + ? WHERE key = ?');
   const updateHashCount = db.prepare('UPDATE redis_keys SET hash_count = ?, updated_at = ? WHERE key = ?');
   const updateHashCountOnly = db.prepare('UPDATE redis_keys SET hash_count = ? WHERE key = ?');
   const incrHashCount = db.prepare(
@@ -50,6 +56,9 @@ export function createKeysStorage(db) {
       const now = options.updatedAt ?? Date.now();
       const expiresAt = options.expiresAt ?? null;
       const existing = getByKey.get(key);
+      const setCount = type === KEY_TYPES.SET
+        ? (options.setCount ?? existing?.setCount ?? 0)
+        : null;
       const hashCount = type === KEY_TYPES.HASH
         ? (options.hashCount ?? existing?.hashCount ?? 0)
         : null;
@@ -57,9 +66,9 @@ export function createKeysStorage(db) {
         ? (options.zsetCount ?? existing?.zsetCount ?? 0)
         : null;
       if (existing) {
-        updateMeta.run(type, expiresAt, hashCount, zsetCount, now, key);
+        updateMeta.run(type, expiresAt, setCount, hashCount, zsetCount, now, key);
       } else {
-        insert.run(key, type, expiresAt, hashCount, zsetCount, now);
+        insert.run(key, type, expiresAt, setCount, hashCount, zsetCount, now);
       }
     },
 
@@ -69,6 +78,24 @@ export function createKeysStorage(db) {
 
     bumpVersion(key) {
       updateVersion.run(Date.now(), key);
+    },
+
+    setSetCount(key, setCount, options = {}) {
+      const touchUpdatedAt = options.touchUpdatedAt !== false;
+      if (touchUpdatedAt) {
+        updateSetCount.run(setCount, options.updatedAt ?? Date.now(), key);
+      } else {
+        updateSetCountOnly.run(setCount, key);
+      }
+    },
+
+    incrSetCount(key, delta, options = {}) {
+      const touchUpdatedAt = options.touchUpdatedAt !== false;
+      if (touchUpdatedAt) {
+        incrSetCount.run(delta, options.updatedAt ?? Date.now(), key);
+      } else {
+        incrSetCountOnly.run(delta, key);
+      }
     },
 
     setHashCount(key, hashCount, options = {}) {

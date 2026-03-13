@@ -4,6 +4,8 @@
  * Note: Redis uses max min (first score is upper bound, second is lower bound).
  */
 
+import { parseScoreBound } from './score-bounds.js';
+
 export function handleZrevrangebyscore(engine, args) {
   if (!args || args.length < 3) {
     return { error: 'ERR wrong number of arguments for \'ZREVRANGEBYSCORE\' command' };
@@ -27,9 +29,9 @@ export function handleZrevrangebyscore(engine, args) {
     }
   }
   try {
-    const max = parseFloat(String(args[1]));
-    const min = parseFloat(String(args[2]));
-    if (Number.isNaN(max) || Number.isNaN(min)) {
+    const max = parseScoreBound(args[1]);
+    const min = parseScoreBound(args[2]);
+    if (max == null || min == null) {
       return { error: 'ERR value is not a valid float' };
     }
     const options = { withScores };
