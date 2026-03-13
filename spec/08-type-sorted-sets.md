@@ -91,8 +91,8 @@ Notes:
 
 * Return cardinality:
 
-  * Prefer `SELECT COUNT(*)` (acceptable).
-  * If performance needs: maintain count in a meta table (not needed initially).
+  * Prefer metadata counter (`redis_keys.zset_count`) for O(1) reads.
+  * Backward compatibility: if counter is missing/null, hydrate once from `SELECT COUNT(*)`.
 
 ### C.5.4 ZSCORE
 

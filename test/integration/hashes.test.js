@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
 import { createTestServer } from '../helpers/server.js';
 import { sendCommand, argv } from '../helpers/client.js';
 import { tryParseValue } from '../../src/resp/parser.js';
@@ -55,5 +56,34 @@ describe('Hashes integration', () => {
     await sendCommand(port, argv('SET', 'hlen:str', 'value'));
     const reply = await sendCommand(port, argv('HLEN', 'hlen:str'));
     assert.ok(reply.toString('utf8').includes('WRONGTYPE'));
+  });
+
+  it('RENAME keeps hash cardinality metadata', async () => {
+    await sendCommand(port, argv('HSET', 'hrename:src', 'a', '1', 'b', '2', 'c', '3'));
+    await sendCommand(port, argv('RENAME', 'hrename:src', 'hrename:dst'));
+    const reply = await sendCommand(port, argv('HLEN', 'hrename:dst'));
+    assert.equal(tryParseValue(reply, 0).value, 3);
+  });
+
+  it('legacy hash rows with null hash_count hydrate on first HLEN', async () => {
+    const s1 = await createTestServer();
+    await sendCommand(s1.port, argv('HSET', 'legacy:h', 'f1', 'v1', 'f2', 'v2'));
+    const dbPath = s1.dbPath;
+    await s1.closeAsync();
+    s1.db.close();
+
+    const legacyDb = new Database(dbPath);
+    legacyDb.prepare('UPDATE redis_keys SET hash_count = NULL WHERE key = ?').run(Buffer.from('legacy:h', 'utf8'));
+    legacyDb.close();
+
+    const s2 = await createTestServer({ dbPath });
+    const first = await sendCommand(s2.port, argv('HLEN', 'legacy:h'));
+    assert.equal(tryParseValue(first, 0).value, 2);
+    const second = await sendCommand(s2.port, argv('HLEN', 'legacy:h'));
+    assert.equal(tryParseValue(second, 0).value, 2);
+
+    const row = s2.db.prepare('SELECT hash_count AS n FROM redis_keys WHERE key = ?').get(Buffer.from('legacy:h', 'utf8'));
+    assert.equal(row.n, 2);
+    await s2.closeAsync();
   });
 });

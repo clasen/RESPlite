@@ -346,6 +346,13 @@ async function benchZcount(client, n) {
   for (let i = 0; i < n; i++) await client.sendCommand(['ZCOUNT', key, '0', '99']);
 }
 
+async function benchZcard(client, n) {
+  const key = 'bm:zset:card';
+  await client.del(key);
+  await client.zAdd(key, Array.from({ length: 100 }, (_, i) => ({ score: i, value: `m${i}` })));
+  for (let i = 0; i < n; i++) await client.sendCommand(['ZCARD', key]);
+}
+
 async function benchZincrby(client, n) {
   const key = 'bm:zset:incr';
   await client.del(key);
@@ -353,7 +360,31 @@ async function benchZincrby(client, n) {
   for (let i = 0; i < n; i++) await client.sendCommand(['ZINCRBY', key, '1', 'member']);
 }
 
-async function benchZremrangebyrank(client, n) {
+async function benchZremrangebyrankPure(client, n) {
+  const key = 'bm:zset:remrank:pure';
+  const seed = Array.from({ length: 100 }, (_, j) => ({ score: j, value: `m${j}` }));
+  const refill = Array.from({ length: 10 }, (_, j) => ({ score: j, value: `m${j}` }));
+  await client.del(key);
+  await client.zAdd(key, seed);
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['ZREMRANGEBYRANK', key, '0', '9']);
+    await client.zAdd(key, refill);
+  }
+}
+
+async function benchZremrangebyscorePure(client, n) {
+  const key = 'bm:zset:remscore:pure';
+  const seed = Array.from({ length: 100 }, (_, j) => ({ score: j, value: `m${j}` }));
+  const refill = Array.from({ length: 10 }, (_, j) => ({ score: j, value: `m${j}` }));
+  await client.del(key);
+  await client.zAdd(key, seed);
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['ZREMRANGEBYSCORE', key, '0', '9']);
+    await client.zAdd(key, refill);
+  }
+}
+
+async function benchZremrangebyrankChurn(client, n) {
   const key = 'bm:zset:remrank';
   for (let i = 0; i < n; i++) {
     await client.del(key);
@@ -362,7 +393,7 @@ async function benchZremrangebyrank(client, n) {
   }
 }
 
-async function benchZremrangebyscore(client, n) {
+async function benchZremrangebyscoreChurn(client, n) {
   const key = 'bm:zset:remscore';
   for (let i = 0; i < n; i++) {
     await client.del(key);
@@ -388,6 +419,14 @@ async function benchSrandmember(client, n) {
   await client.del(key);
   await client.sAdd(key, Array.from({ length: 50 }, (_, i) => `m${i}`));
   for (let i = 0; i < n; i++) await client.sendCommand(['SRANDMEMBER', key]);
+}
+
+async function benchHincrby(client, n) {
+  const key = 'bm:hash:incr';
+  const field = 'counter';
+  await client.del(key);
+  await client.hSet(key, field, '0');
+  for (let i = 0; i < n; i++) await client.sendCommand(['HINCRBY', key, field, '1']);
 }
 
 const FT_INDEX = 'bm_ft_idx';
@@ -447,11 +486,15 @@ const SUITES = [
   { name: 'LTRIM', fn: benchLtrim, iterScale: 1 },
   { name: 'RENAME', fn: benchRename, iterScale: 1 },
   { name: 'ZCOUNT', fn: benchZcount, iterScale: 1 },
+  { name: 'ZCARD(100)', fn: benchZcard, iterScale: 1 },
   { name: 'ZINCRBY', fn: benchZincrby, iterScale: 1 },
-  { name: 'ZREMRANGEBYRANK', fn: benchZremrangebyrank, iterScale: 1 },
-  { name: 'ZREMRANGEBYSCORE', fn: benchZremrangebyscore, iterScale: 1 },
+  { name: 'ZREMRANGEBYRANK (pure)', fn: benchZremrangebyrankPure, iterScale: 1 },
+  { name: 'ZREMRANGEBYSCORE (pure)', fn: benchZremrangebyscorePure, iterScale: 1 },
+  { name: 'ZREMRANGEBYRANK (churn)', fn: benchZremrangebyrankChurn, iterScale: 1 },
+  { name: 'ZREMRANGEBYSCORE (churn)', fn: benchZremrangebyscoreChurn, iterScale: 1 },
   { name: 'SPOP', fn: benchSpop, iterScale: 1 },
   { name: 'SRANDMEMBER', fn: benchSrandmember, iterScale: 1 },
+  { name: 'HINCRBY', fn: benchHincrby, iterScale: 1 },
   { name: 'FT.SEARCH', fn: benchFtSearch, iterScale: 1 },
 ];
 

@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS redis_keys (
   key BLOB PRIMARY KEY,
   type INTEGER NOT NULL,
   expires_at INTEGER,
+  hash_count INTEGER,
+  zset_count INTEGER,
   version INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL
 );
@@ -86,4 +88,14 @@ export const KEY_TYPES = {
  */
 export function applySchema(db) {
   db.exec(SCHEMA);
+  // Backward-compatible migration for databases created before count columns existed.
+  const cols = db.prepare('PRAGMA table_info(redis_keys)').all();
+  const hasHashCount = cols.some((c) => c.name === 'hash_count');
+  const hasZsetCount = cols.some((c) => c.name === 'zset_count');
+  if (!hasHashCount) {
+    db.exec('ALTER TABLE redis_keys ADD COLUMN hash_count INTEGER;');
+  }
+  if (!hasZsetCount) {
+    db.exec('ALTER TABLE redis_keys ADD COLUMN zset_count INTEGER;');
+  }
 }

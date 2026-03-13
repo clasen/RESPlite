@@ -9,16 +9,28 @@ import { KEY_TYPES } from './schema.js';
  */
 export function createKeysStorage(db) {
   const getByKey = db.prepare(
-    'SELECT key, type, expires_at AS expiresAt, version, updated_at AS updatedAt FROM redis_keys WHERE key = ?'
+    'SELECT key, type, expires_at AS expiresAt, hash_count AS hashCount, zset_count AS zsetCount, version, updated_at AS updatedAt FROM redis_keys WHERE key = ?'
   );
   const insert = db.prepare(
-    `INSERT INTO redis_keys (key, type, expires_at, version, updated_at) VALUES (?, ?, ?, 1, ?)`
+    `INSERT INTO redis_keys (key, type, expires_at, hash_count, zset_count, version, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?)`
   );
   const updateMeta = db.prepare(
-    'UPDATE redis_keys SET type = ?, expires_at = ?, version = version + 1, updated_at = ? WHERE key = ?'
+    'UPDATE redis_keys SET type = ?, expires_at = ?, hash_count = ?, zset_count = ?, version = version + 1, updated_at = ? WHERE key = ?'
   );
   const updateExpires = db.prepare('UPDATE redis_keys SET expires_at = ?, updated_at = ? WHERE key = ?');
   const updateVersion = db.prepare('UPDATE redis_keys SET version = version + 1, updated_at = ? WHERE key = ?');
+  const updateHashCount = db.prepare('UPDATE redis_keys SET hash_count = ?, updated_at = ? WHERE key = ?');
+  const updateHashCountOnly = db.prepare('UPDATE redis_keys SET hash_count = ? WHERE key = ?');
+  const incrHashCount = db.prepare(
+    'UPDATE redis_keys SET hash_count = COALESCE(hash_count, 0) + ?, updated_at = ? WHERE key = ?'
+  );
+  const incrHashCountOnly = db.prepare('UPDATE redis_keys SET hash_count = COALESCE(hash_count, 0) + ? WHERE key = ?');
+  const updateZsetCount = db.prepare('UPDATE redis_keys SET zset_count = ?, updated_at = ? WHERE key = ?');
+  const updateZsetCountOnly = db.prepare('UPDATE redis_keys SET zset_count = ? WHERE key = ?');
+  const incrZsetCount = db.prepare(
+    'UPDATE redis_keys SET zset_count = COALESCE(zset_count, 0) + ?, updated_at = ? WHERE key = ?'
+  );
+  const incrZsetCountOnly = db.prepare('UPDATE redis_keys SET zset_count = COALESCE(zset_count, 0) + ? WHERE key = ?');
   const deleteByKey = db.prepare('DELETE FROM redis_keys WHERE key = ?');
   const deleteExpiredStmt = db.prepare('DELETE FROM redis_keys WHERE expires_at IS NOT NULL AND expires_at <= ?');
   const countAll = db.prepare('SELECT COUNT(*) AS n FROM redis_keys').pluck();
@@ -38,10 +50,16 @@ export function createKeysStorage(db) {
       const now = options.updatedAt ?? Date.now();
       const expiresAt = options.expiresAt ?? null;
       const existing = getByKey.get(key);
+      const hashCount = type === KEY_TYPES.HASH
+        ? (options.hashCount ?? existing?.hashCount ?? 0)
+        : null;
+      const zsetCount = type === KEY_TYPES.ZSET
+        ? (options.zsetCount ?? existing?.zsetCount ?? 0)
+        : null;
       if (existing) {
-        updateMeta.run(type, expiresAt, now, key);
+        updateMeta.run(type, expiresAt, hashCount, zsetCount, now, key);
       } else {
-        insert.run(key, type, expiresAt, now);
+        insert.run(key, type, expiresAt, hashCount, zsetCount, now);
       }
     },
 
@@ -51,6 +69,42 @@ export function createKeysStorage(db) {
 
     bumpVersion(key) {
       updateVersion.run(Date.now(), key);
+    },
+
+    setHashCount(key, hashCount, options = {}) {
+      const touchUpdatedAt = options.touchUpdatedAt !== false;
+      if (touchUpdatedAt) {
+        updateHashCount.run(hashCount, options.updatedAt ?? Date.now(), key);
+      } else {
+        updateHashCountOnly.run(hashCount, key);
+      }
+    },
+
+    incrHashCount(key, delta, options = {}) {
+      const touchUpdatedAt = options.touchUpdatedAt !== false;
+      if (touchUpdatedAt) {
+        incrHashCount.run(delta, options.updatedAt ?? Date.now(), key);
+      } else {
+        incrHashCountOnly.run(delta, key);
+      }
+    },
+
+    setZsetCount(key, zsetCount, options = {}) {
+      const touchUpdatedAt = options.touchUpdatedAt !== false;
+      if (touchUpdatedAt) {
+        updateZsetCount.run(zsetCount, options.updatedAt ?? Date.now(), key);
+      } else {
+        updateZsetCountOnly.run(zsetCount, key);
+      }
+    },
+
+    incrZsetCount(key, delta, options = {}) {
+      const touchUpdatedAt = options.touchUpdatedAt !== false;
+      if (touchUpdatedAt) {
+        incrZsetCount.run(delta, options.updatedAt ?? Date.now(), key);
+      } else {
+        incrZsetCountOnly.run(delta, key);
+      }
     },
 
     delete(key) {

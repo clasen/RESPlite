@@ -567,7 +567,11 @@ export function createEngine(opts = {}) {
       if (k.equals(nk)) return;
       runInTransaction(db, () => {
         if (keys.get(nk)) keys.delete(nk);
-        keys.set(nk, meta.type, { expiresAt: meta.expiresAt });
+        keys.set(nk, meta.type, {
+          expiresAt: meta.expiresAt,
+          hashCount: meta.type === KEY_TYPES.HASH ? meta.hashCount : undefined,
+          zsetCount: meta.type === KEY_TYPES.ZSET ? meta.zsetCount : undefined,
+        });
         switch (meta.type) {
           case KEY_TYPES.STRING:
             strings.copyKey(k, nk);

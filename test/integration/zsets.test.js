@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
 import { createTestServer } from '../helpers/server.js';
 import { sendCommand, argv } from '../helpers/client.js';
 import { tryParseValue } from '../../src/resp/parser.js';
@@ -38,6 +39,15 @@ describe('ZSET integration', () => {
     const scoreReply = await sendCommand(port, argv('ZSCORE', 'z2', 'm1'));
     const score = tryParseValue(scoreReply, 0).value;
     assert.equal(score.toString('utf8'), '20');
+  });
+
+  it('ZADD with duplicate member in same command counts as new once and keeps last score', async () => {
+    const added = await sendCommand(port, argv('ZADD', 'zdup', '1', 'm', '2', 'm'));
+    assert.equal(tryParseValue(added, 0).value, 1);
+
+    const scoreReply = await sendCommand(port, argv('ZSCORE', 'zdup', 'm'));
+    const score = tryParseValue(scoreReply, 0).value;
+    assert.equal(score.toString('utf8'), '2');
   });
 
   it('ZRANGE WITHSCORES returns member, score, ...', async () => {
@@ -198,6 +208,35 @@ describe('ZSET integration', () => {
     const arr = tryParseValue(rangeReply, 0).value;
     assert.equal(arr[0].toString('utf8'), 'one');
     assert.equal(arr[1].toString('utf8'), 'two');
+    await s2.closeAsync();
+  });
+
+  it('RENAME keeps zset cardinality metadata', async () => {
+    await sendCommand(port, argv('ZADD', 'zrename_src', '1', 'a', '2', 'b', '3', 'c'));
+    await sendCommand(port, argv('RENAME', 'zrename_src', 'zrename_dst'));
+    const cardReply = await sendCommand(port, argv('ZCARD', 'zrename_dst'));
+    assert.equal(tryParseValue(cardReply, 0).value, 3);
+  });
+
+  it('legacy zset rows with null zset_count hydrate on first ZCARD', async () => {
+    const s1 = await createTestServer();
+    await sendCommand(s1.port, argv('ZADD', 'legacy_z', '1', 'one', '2', 'two'));
+    const dbPath = s1.dbPath;
+    await s1.closeAsync();
+    s1.db.close();
+
+    const legacyDb = new Database(dbPath);
+    legacyDb.prepare('UPDATE redis_keys SET zset_count = NULL WHERE key = ?').run(Buffer.from('legacy_z', 'utf8'));
+    legacyDb.close();
+
+    const s2 = await createTestServer({ dbPath });
+    const first = await sendCommand(s2.port, argv('ZCARD', 'legacy_z'));
+    assert.equal(tryParseValue(first, 0).value, 2);
+    const second = await sendCommand(s2.port, argv('ZCARD', 'legacy_z'));
+    assert.equal(tryParseValue(second, 0).value, 2);
+
+    const row = s2.db.prepare('SELECT zset_count AS n FROM redis_keys WHERE key = ?').get(Buffer.from('legacy_z', 'utf8'));
+    assert.equal(row.n, 2);
     await s2.closeAsync();
   });
 

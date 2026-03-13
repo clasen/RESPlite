@@ -26,6 +26,12 @@ export function createZsetsStorage(db, keys) {
     `INSERT INTO redis_zsets (key, member, score) VALUES (?, ?, ?)
      ON CONFLICT(key, member) DO UPDATE SET score = excluded.score`
   );
+  const insertIgnoreStmt = db.prepare(
+    'INSERT OR IGNORE INTO redis_zsets (key, member, score) VALUES (?, ?, ?)'
+  );
+  const updateScoreStmt = db.prepare(
+    'UPDATE redis_zsets SET score = ? WHERE key = ? AND member = ?'
+  );
   const deleteStmt = db.prepare('DELETE FROM redis_zsets WHERE key = ? AND member = ?');
   const deleteAllStmt = db.prepare('DELETE FROM redis_zsets WHERE key = ?');
   const countStmt = db.prepare('SELECT COUNT(*) AS n FROM redis_zsets WHERE key = ?');
@@ -82,19 +88,40 @@ export function createZsetsStorage(db, keys) {
       return runInTransaction(db, () => {
         const now = options.updatedAt ?? Date.now();
         const meta = keys.get(key);
+        let knownCount = 0;
         if (meta) {
           if (meta.type !== KEY_TYPES.ZSET) {
             throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value');
           }
           keys.bumpVersion(key);
+          if (meta.zsetCount == null) {
+            const row = countStmt.get(key);
+            knownCount = (row && row.n) || 0;
+            keys.setZsetCount(key, knownCount, { touchUpdatedAt: false });
+          } else {
+            knownCount = meta.zsetCount;
+          }
         } else {
-          keys.set(key, KEY_TYPES.ZSET, { updatedAt: now });
+          keys.set(key, KEY_TYPES.ZSET, { updatedAt: now, zsetCount: 0 });
         }
         let newCount = 0;
         for (const { score, member } of pairs) {
-          const existed = scoreStmt.get(key, member) != null;
-          upsertStmt.run(key, member, score);
-          if (!existed) newCount++;
+          const inserted = insertIgnoreStmt.run(key, member, score).changes;
+          if (inserted > 0) {
+            newCount++;
+          } else {
+            updateScoreStmt.run(score, key, member);
+          }
+        }
+        if (newCount > 0) {
+          if (meta) {
+            keys.incrZsetCount(key, newCount, { touchUpdatedAt: false });
+          } else {
+            keys.setZsetCount(key, newCount, { touchUpdatedAt: false });
+          }
+        } else if (meta && meta.zsetCount == null) {
+          // Legacy rows may have null counters; persist the hydrated value.
+          keys.setZsetCount(key, knownCount, { touchUpdatedAt: false });
         }
         return newCount;
       });
@@ -108,23 +135,35 @@ export function createZsetsStorage(db, keys) {
      */
     remove(key, members) {
       return runInTransaction(db, () => {
+        const meta = keys.get(key);
+        const before = meta && meta.zsetCount != null ? meta.zsetCount : null;
         let n = 0;
         for (const m of members) {
           n += deleteStmt.run(key, m).changes;
         }
-        const row = countStmt.get(key);
-        const remaining = (row && row.n) || 0;
+        const remaining = before != null ? Math.max(0, before - n) : ((countStmt.get(key) || {}).n || 0);
         if (remaining === 0) {
           deleteAllStmt.run(key);
           keys.delete(key);
+        } else if (n > 0) {
+          keys.setZsetCount(key, remaining, { touchUpdatedAt: false });
         }
         return n;
       });
     },
 
     count(key) {
+      const meta = keys.get(key);
+      if (meta && meta.type === KEY_TYPES.ZSET && meta.zsetCount != null) {
+        return meta.zsetCount;
+      }
       const row = countStmt.get(key);
-      return row ? row.n : 0;
+      const n = row ? row.n : 0;
+      if (meta && meta.type === KEY_TYPES.ZSET && meta.zsetCount == null) {
+        // One-time hydration for databases created before zset_count existed.
+        keys.setZsetCount(key, n, { touchUpdatedAt: false });
+      }
+      return n;
     },
 
     score(key, member) {
@@ -270,6 +309,9 @@ export function createZsetsStorage(db, keys) {
       for (const r of rows) {
         upsertStmt.run(newKey, r.member, r.score);
       }
+      const sourceMeta = keys.get(oldKey);
+      const nextCount = sourceMeta && sourceMeta.zsetCount != null ? sourceMeta.zsetCount : rows.length;
+      keys.setZsetCount(newKey, nextCount, { touchUpdatedAt: false });
     },
 
     countByScore(key, min, max) {
@@ -285,14 +327,23 @@ export function createZsetsStorage(db, keys) {
           throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value');
         }
         if (!meta) {
-          keys.set(key, KEY_TYPES.ZSET, { updatedAt: now });
+          keys.set(key, KEY_TYPES.ZSET, { updatedAt: now, zsetCount: 0 });
         } else {
           keys.bumpVersion(key);
+          if (meta.zsetCount == null) {
+            const row = countStmt.get(key);
+            const hydrated = (row && row.n) || 0;
+            keys.setZsetCount(key, hydrated, { touchUpdatedAt: false });
+          }
         }
         const cur = scoreStmt.get(key, member);
         const prev = cur == null ? 0 : cur.score;
         const next = prev + increment;
         upsertStmt.run(key, member, next);
+        if (cur == null) {
+          if (meta) keys.incrZsetCount(key, 1, { touchUpdatedAt: false });
+          else keys.setZsetCount(key, 1, { touchUpdatedAt: false });
+        }
         return formatScore(next);
       });
     },
@@ -318,6 +369,8 @@ export function createZsetsStorage(db, keys) {
         if (remaining === 0) {
           deleteAllStmt.run(key);
           keys.delete(key);
+        } else if (n > 0) {
+          keys.setZsetCount(key, remaining, { touchUpdatedAt: false });
         }
         return n;
       });
@@ -333,6 +386,7 @@ export function createZsetsStorage(db, keys) {
           keys.delete(key);
         } else if (r.changes > 0) {
           keys.bumpVersion(key);
+          keys.setZsetCount(key, n, { touchUpdatedAt: false });
         }
         return r.changes;
       });
