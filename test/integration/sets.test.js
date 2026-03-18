@@ -52,6 +52,34 @@ describe('Sets integration', () => {
     assert.equal(tryParseValue(reply, 0).value, 3);
   });
 
+  it('concurrent SADD of same member is idempotent', async () => {
+    const key = `scon:sadd:${Date.now()}`;
+    const N = 25;
+    const replies = await Promise.all(Array.from({ length: N }, () => sendCommand(port, argv('SADD', key, 'x'))));
+    const addedCounts = replies.map((reply) => tryParseValue(reply, 0).value);
+    const firstAdds = addedCounts.filter((n) => n === 1).length;
+    const duplicateAdds = addedCounts.filter((n) => n === 0).length;
+    assert.equal(firstAdds, 1);
+    assert.equal(duplicateAdds, N - 1);
+    const card = await sendCommand(port, argv('SCARD', key));
+    assert.equal(tryParseValue(card, 0).value, 1);
+  });
+
+  it('concurrent SPOP returns unique members and drains set', async () => {
+    const key = `scon:spop:${Date.now()}`;
+    const members = Array.from({ length: 24 }, (_, i) => `m${i}`);
+    await sendCommand(port, argv('SADD', key, ...members));
+    const poppedRaw = await Promise.all(Array.from({ length: members.length }, () => sendCommand(port, argv('SPOP', key))));
+    const popped = poppedRaw.map((reply) => {
+      const parsed = tryParseValue(reply, 0);
+      return parsed.value === null ? null : parsed.value.toString('utf8');
+    });
+    assert.equal(popped.includes(null), false);
+    assert.equal(new Set(popped).size, members.length);
+    const card = await sendCommand(port, argv('SCARD', key));
+    assert.equal(tryParseValue(card, 0).value, 0);
+  });
+
   it('legacy set rows with null set_count hydrate on first SCARD', async () => {
     const s1 = await createTestServer();
     await sendCommand(s1.port, argv('SADD', 'legacy:s', 'a', 'b'));

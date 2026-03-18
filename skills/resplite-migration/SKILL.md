@@ -1,10 +1,7 @@
 ---
-name: resplite-migration-cutover-assistant
+name: resplite-migration
 description: Guides Redis to RESPLite migration work using the programmatic migration API, dirty-key tracking, cutover, and verification. Use when the user says "migrate Redis", "dirty tracker", "cutover", "resume bulk import", "verify migration", or "move RediSearch data during migration". Do not use for generic command work that does not touch the migration flow.
-license: MIT
 metadata:
-  author: Cursor Agent
-  version: 1.0.0
   category: workflow-automation
   tags: [resplite, migration, redis, cutover, verification]
 ---

@@ -1,10 +1,7 @@
 ---
-name: resplite-ft-search-workbench
+name: resplite-ft-search
 description: Builds or refines RESPLite `FT.*` behavior and RediSearch migration mapping on top of SQLite FTS5. Use when the user says "add FT command support", "fix FT.SEARCH", "adjust SQLite FTS5 behavior", "migrate RediSearch indices", or "work on FT.CREATE or FT.ADD semantics". Do not use for unrelated command work outside the search surface.
-license: MIT
 metadata:
-  author: Cursor Agent
-  version: 1.0.0
   category: workflow-automation
   tags: [resplite, search, redisearch, sqlite, fts5]
 ---

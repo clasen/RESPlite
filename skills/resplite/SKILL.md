@@ -1,12 +1,9 @@
 ---
-name: resplite-command-vertical-slice
+name: resplite
 description: Implements or extends a Redis-like command in RESPLite from spec to docs and tests. Use when the user says "add a command", "support a Redis option", "fix command compatibility", "implement ZRANGE behavior", or "update the compatibility matrix". Do not use for migration-only or FT-only work unless the change also affects the general command surface.
-license: MIT
 metadata:
-  author: Cursor Agent
-  version: 1.0.0
   category: workflow-automation
-  tags: [resplite, redis-compatibility, commands, tests]
+  tags: [resplite, redis, commands, tests]
 ---
 
 # RESPLite Command Vertical Slice
