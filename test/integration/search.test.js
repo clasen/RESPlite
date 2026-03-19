@@ -230,6 +230,37 @@ describe('Search integration', () => {
     const g2 = tryParseValue(gorge2, 0).value;
     assert.equal(g2[0], 0, 'gorge* should NOT match martan - this is the bug');
   });
+
+  it('FT.DEL followed by FT.ADD REPLACE does not keep stale tokens', async () => {
+    await sendCommand(port, argv('FT.CREATE', 'del_replace_idx', 'SCHEMA', 'payload', 'TEXT'));
+
+    const addBicho = await sendCommand(
+      port,
+      argv('FT.ADD', 'del_replace_idx', 'DY1O2', '1', 'REPLACE', 'FIELDS', 'payload', 'bicho')
+    );
+    assert.equal(tryParseValue(addBicho, 0).value, 'OK');
+
+    const del = await sendCommand(port, argv('FT.DEL', 'del_replace_idx', 'DY1O2'));
+    assert.equal(tryParseValue(del, 0).value, 1);
+
+    const addGorrion = await sendCommand(
+      port,
+      argv('FT.ADD', 'del_replace_idx', 'DY1O2', '1', 'REPLACE', 'FIELDS', 'payload', 'gorrion')
+    );
+    assert.equal(tryParseValue(addGorrion, 0).value, 'OK');
+
+    const oldPrefix = await sendCommand(port, argv('FT.SEARCH', 'del_replace_idx', 'bicho*', 'NOCONTENT', 'LIMIT', '0', '10'));
+    const oldArr = tryParseValue(oldPrefix, 0).value;
+    assert.equal(oldArr[0], 0, 'bicho* should not match after re-adding DY1O2 with gorrion');
+
+    const newPrefix = await sendCommand(
+      port,
+      argv('FT.SEARCH', 'del_replace_idx', 'gorrion*', 'NOCONTENT', 'LIMIT', '0', '10')
+    );
+    const newArr = tryParseValue(newPrefix, 0).value;
+    assert.equal(newArr[0], 1);
+    assert.equal(newArr[1].toString?.('utf8') ?? newArr[1], 'DY1O2');
+  });
 });
 
 describe('Search persistence', () => {

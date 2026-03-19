@@ -29,6 +29,46 @@ function tableName(idx, suffix) {
 }
 
 /**
+ * Build deterministic sorted field names for FTS column order.
+ * @param {{ fields: { name: string, type: string }[] }} schema
+ * @returns {string[]}
+ */
+function getSortedFieldNames(schema) {
+  return schema.fields.map((f) => f.name).sort();
+}
+
+/**
+ * Encode field values in deterministic FTS column order.
+ * Missing values are normalized to empty string to match insert semantics.
+ * @param {string[]} fieldNames
+ * @param {Record<string, string>} fields
+ * @returns {string[]}
+ */
+function encodeFtsFieldValues(fieldNames, fields) {
+  return fieldNames.map((f) => fields[f] ?? '');
+}
+
+/**
+ * Delete a specific contentless FTS row using the special 'delete' command row.
+ * FTS5 requires passing the exact prior values for all indexed columns.
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} ftsTableName
+ * @param {number} ftsRowid
+ * @param {string[]} fieldNames
+ * @param {Record<string, string>} fields
+ */
+function deleteFtsRow(db, ftsTableName, ftsRowid, fieldNames, fields) {
+  const values = encodeFtsFieldValues(fieldNames, fields);
+  const columns = [ftsTableName, 'rowid', ...fieldNames];
+  const placeholders = columns.map(() => '?').join(', ');
+  db.prepare(`INSERT INTO ${ftsTableName}(${columns.join(', ')}) VALUES (${placeholders})`).run(
+    'delete',
+    ftsRowid,
+    ...values
+  );
+}
+
+/**
  * Build canonical schema JSON (fields sorted by name). D.12.2
  * @param {{ name: string, type: string }[]} fields
  * @returns {string}
@@ -138,7 +178,7 @@ export function getIndexMeta(db, name) {
  */
 export function addDocument(db, idx, docId, score, replace, fields) {
   const meta = getIndexMeta(db, idx);
-  const fieldNames = meta.schema.fields.map((f) => f.name);
+  const fieldNames = getSortedFieldNames(meta.schema);
   for (const k of Object.keys(fields)) {
     if (!fieldNames.includes(k)) throw new Error('ERR unknown field');
   }
@@ -154,13 +194,14 @@ export function addDocument(db, idx, docId, score, replace, fields) {
     let ftsRowid;
     if (existing) {
       if (!replace) throw new Error('ERR document exists');
-      // FTS5 contentless bug: INSERT OR REPLACE doesn't remove old tokens.
-      // Solution: assign a new fts_rowid to avoid token pollution.
-      const maxRow = db.prepare(`SELECT COALESCE(MAX(fts_rowid), 0) AS m FROM ${docmapT}`).get();
-      ftsRowid = maxRow.m + 1;
-      db.prepare(`UPDATE ${docmapT} SET fts_rowid = ? WHERE doc_id = ?`).run(ftsRowid, docId);
+      ftsRowid = existing.fts_rowid;
+      const oldDoc = db.prepare(`SELECT fields_json FROM ${docsT} WHERE doc_id = ?`).get(docId);
+      if (oldDoc?.fields_json) {
+        const oldFields = JSON.parse(oldDoc.fields_json);
+        deleteFtsRow(db, ftsT, ftsRowid, fieldNames, oldFields);
+      }
     } else {
-      const maxRow = db.prepare(`SELECT COALESCE(MAX(fts_rowid), 0) AS m FROM ${docmapT}`).get();
+      const maxRow = db.prepare(`SELECT COALESCE(MAX(rowid), 0) AS m FROM ${ftsT}`).get();
       ftsRowid = maxRow.m + 1;
       db.prepare(`INSERT INTO ${docmapT}(doc_id, fts_rowid) VALUES (?, ?)`).run(docId, ftsRowid);
     }
@@ -176,9 +217,8 @@ export function addDocument(db, idx, docId, score, replace, fields) {
       ).run(docId, score, fieldsJson, now, now);
     }
 
-    // FTS5 contentless: insert with new rowid (old rowid becomes orphaned and won't match via docmap join).
-    const ftsColumns = ['rowid', ...fieldNames.sort()];
-    const ftsValues = [ftsRowid, ...fieldNames.sort().map((f) => fields[f] ?? '')];
+    const ftsColumns = ['rowid', ...fieldNames];
+    const ftsValues = [ftsRowid, ...encodeFtsFieldValues(fieldNames, fields)];
     const placeholders = ftsValues.map(() => '?').join(', ');
     const colList = ftsColumns.join(', ');
     db.prepare(`INSERT INTO ${ftsT}(${colList}) VALUES (${placeholders})`).run(...ftsValues);
@@ -218,7 +258,8 @@ export function getDocumentFields(db, idx, docId) {
 }
 
 export function deleteDocument(db, idx, docId) {
-  getIndexMeta(db, idx);
+  const meta = getIndexMeta(db, idx);
+  const fieldNames = getSortedFieldNames(meta.schema);
   const docsT = tableName(idx, 'docs');
   const docmapT = tableName(idx, 'docmap');
   const ftsT = tableName(idx, 'fts');
@@ -226,9 +267,12 @@ export function deleteDocument(db, idx, docId) {
   const row = db.prepare(`SELECT fts_rowid FROM ${docmapT} WHERE doc_id = ?`).get(docId);
   if (!row) return 0;
 
-  // FTS5 contentless does not support DELETE. Remove from docs and docmap; FTS row becomes orphaned
-  // (search results join through docmap so orphaned FTS rows are not returned).
   db.transaction(() => {
+    const docRow = db.prepare(`SELECT fields_json FROM ${docsT} WHERE doc_id = ?`).get(docId);
+    if (docRow?.fields_json) {
+      const fields = JSON.parse(docRow.fields_json);
+      deleteFtsRow(db, ftsT, row.fts_rowid, fieldNames, fields);
+    }
     db.prepare(`DELETE FROM ${docsT} WHERE doc_id = ?`).run(docId);
     db.prepare(`DELETE FROM ${docmapT} WHERE doc_id = ?`).run(docId);
   })();
