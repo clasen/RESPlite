@@ -11,6 +11,7 @@ Originally Appendix D. Goals, data model, FT.CREATE/ADD/DEL/SEARCH/SUG* behavior
   * `FT.INFO`
   * `FT.ADD`
   * `FT.DEL`
+  * `FT.GET`
   * `FT.SUGADD`
   * `FT.SUGGET`
   * `FT.SUGDEL`
@@ -250,6 +251,31 @@ RESP Integer:
 
 ## D.7.4 Errors
 
+* Index missing: `-Unknown index name`
+
+---
+
+# D.7.5 FT.GET
+
+Aligned with RediSearch: load a single document by id from the index (not from the Redis keyspace).
+
+## D.7.5.1 Syntax
+
+```
+FT.GET {index} {doc_id}
+```
+
+## D.7.5.2 Behavior
+
+* If the index does not exist: error `Unknown index name`.
+* If the document is not in `search_docs__idx`: RESP **nil** (null bulk).
+* Otherwise: RESP **array** of field names and values, `[field, value, ...]`, in **schema field order** (same field names as `FT.ADD`).
+* Empty string field values are returned as **nil** (same idea as RediSearch’s `HGETALL`-based reply for empty values).
+
+## D.7.5.3 Errors
+
+* Wrong arity / bad tokens: `-ERR syntax error`
+* Invalid index name: `-ERR invalid index name`
 * Index missing: `-Unknown index name`
 
 ---
@@ -803,6 +829,14 @@ FT.DEL IndexName DocId
 ```
 
 Return integer 1/0.
+
+### FT.GET
+
+```
+FT.GET IndexName DocId
+```
+
+Same `DocId` rules as `FT.DEL`. Return: flat array of fields and values, or nil if the document is not indexed.
 
 ### FT.SEARCH
 

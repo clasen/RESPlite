@@ -79,6 +79,7 @@ import * as ftCreate from './ft-create.js';
 import * as ftInfo from './ft-info.js';
 import * as ftAdd from './ft-add.js';
 import * as ftDel from './ft-del.js';
+import * as ftGet from './ft-get.js';
 import * as ftSearch from './ft-search.js';
 import * as ftSugadd from './ft-sugadd.js';
 import * as ftSugget from './ft-sugget.js';
@@ -164,6 +165,7 @@ const HANDLERS = new Map([
   ['FT.INFO', (e, a) => ftInfo.handleFtInfo(e, a)],
   ['FT.ADD', (e, a) => ftAdd.handleFtAdd(e, a)],
   ['FT.DEL', (e, a) => ftDel.handleFtDel(e, a)],
+  ['FT.GET', (e, a) => ftGet.handleFtGet(e, a)],
   ['FT.SEARCH', (e, a) => ftSearch.handleFtSearch(e, a)],
   ['FT.SUGADD', (e, a) => ftSugadd.handleFtSugadd(e, a)],
   ['FT.SUGGET', (e, a) => ftSugget.handleFtSugget(e, a)],

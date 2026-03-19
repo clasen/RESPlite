@@ -154,7 +154,11 @@ export function addDocument(db, idx, docId, score, replace, fields) {
     let ftsRowid;
     if (existing) {
       if (!replace) throw new Error('ERR document exists');
-      ftsRowid = existing.fts_rowid;
+      // FTS5 contentless bug: INSERT OR REPLACE doesn't remove old tokens.
+      // Solution: assign a new fts_rowid to avoid token pollution.
+      const maxRow = db.prepare(`SELECT COALESCE(MAX(fts_rowid), 0) AS m FROM ${docmapT}`).get();
+      ftsRowid = maxRow.m + 1;
+      db.prepare(`UPDATE ${docmapT} SET fts_rowid = ? WHERE doc_id = ?`).run(ftsRowid, docId);
     } else {
       const maxRow = db.prepare(`SELECT COALESCE(MAX(fts_rowid), 0) AS m FROM ${docmapT}`).get();
       ftsRowid = maxRow.m + 1;
@@ -172,12 +176,12 @@ export function addDocument(db, idx, docId, score, replace, fields) {
       ).run(docId, score, fieldsJson, now, now);
     }
 
-    // FTS5 contentless: cannot DELETE; use INSERT OR REPLACE to overwrite by rowid when replacing.
+    // FTS5 contentless: insert with new rowid (old rowid becomes orphaned and won't match via docmap join).
     const ftsColumns = ['rowid', ...fieldNames.sort()];
     const ftsValues = [ftsRowid, ...fieldNames.sort().map((f) => fields[f] ?? '')];
     const placeholders = ftsValues.map(() => '?').join(', ');
     const colList = ftsColumns.join(', ');
-    db.prepare(`INSERT OR REPLACE INTO ${ftsT}(${colList}) VALUES (${placeholders})`).run(...ftsValues);
+    db.prepare(`INSERT INTO ${ftsT}(${colList}) VALUES (${placeholders})`).run(...ftsValues);
   });
 
   run();
@@ -190,6 +194,29 @@ export function addDocument(db, idx, docId, score, replace, fields) {
  * @param {string} docId
  * @returns {number}
  */
+/**
+ * Load stored fields for FT.GET: flat [field, value, ...] in schema field order.
+ * RediSearch-compatible: empty string values encode as null in RESP.
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} idx
+ * @param {string} docId
+ * @returns { (string|null)[] | null } - null if document is not in the index
+ */
+export function getDocumentFields(db, idx, docId) {
+  const meta = getIndexMeta(db, idx);
+  const docsT = tableName(idx, 'docs');
+  const row = db.prepare(`SELECT fields_json FROM ${docsT} WHERE doc_id = ?`).get(docId);
+  if (!row) return null;
+  const fields = JSON.parse(row.fields_json);
+  const flat = [];
+  for (const f of meta.schema.fields) {
+    if (!Object.prototype.hasOwnProperty.call(fields, f.name)) continue;
+    const v = fields[f.name];
+    flat.push(f.name, v === '' ? null : v);
+  }
+  return flat;
+}
+
 export function deleteDocument(db, idx, docId) {
   getIndexMeta(db, idx);
   const docsT = tableName(idx, 'docs');
@@ -209,21 +236,64 @@ export function deleteDocument(db, idx, docId) {
 }
 
 /**
- * Validate and build FTS5 MATCH expression. D.13.2: allow tokens [A-Za-z0-9_]+ optionally ending with *
- * Reject chars that break MATCH: " ' : ( ) [ ] { } \ and non-printable.
+ * Build a safe FTS5 MATCH expression from user query.
+ *
+ * We intentionally normalize punctuation so query tokenization is flexible and
+ * closer to Redis/RediSearch behavior for common free-text searches:
+ * - punctuation like ".", "#", "+", "/", ",", "(", ")" acts as separators
+ * - "?" is ignored as punctuation
+ * - "-" inside terms acts as separator (hello-world -> hello world)
+ * - "-term" (leading minus) maps to boolean NOT term
+ * - "@" and ":" are treated as unsupported query syntax and return syntax error
+ *
+ * Supported term chars are unicode letters/digits plus underscore, with
+ * optional trailing "*" for prefix queries.
+ *
+ * Reject control characters and unsafe MATCH breakers: " ' \ and non-printable.
  * @param {string} query
- * @returns {string} - Safe MATCH expression e.g. "martin clasen*"
+ * @returns {string} - Safe MATCH expression e.g. "martin NOT clasen*"
  */
 function buildMatchExpression(query) {
   if (typeof query !== 'string') throw new Error('ERR invalid query');
   const trimmed = query.trim();
   if (trimmed === '') throw new Error('ERR invalid query');
-  if (/["':()\[\]{}\\]/.test(query) || /[\x00-\x1f]/.test(query)) throw new Error('ERR invalid query');
-  const tokens = trimmed.split(/\s+/).filter(Boolean);
-  for (const t of tokens) {
-    if (!/^[A-Za-z0-9_]*\*?$/.test(t)) throw new Error('ERR invalid query');
+  if (/[\x00-\x1f]/.test(query) || /["'\\]/.test(query)) throw new Error('ERR invalid query');
+  if (query.includes('@') || query.includes(':')) throw new Error('ERR syntax error');
+
+  const normalized = trimmed
+    .replace(/\?/g, '')
+    .replace(/[^\p{L}\p{N}_*\-\s]+/gu, ' ')
+    .trim();
+  const rawTokens = normalized.split(/\s+/).filter(Boolean);
+  if (rawTokens.length === 0) throw new Error('ERR invalid query');
+
+  const termRe = /^[\p{L}\p{N}_]+\*?$/u;
+  const tokens = [];
+
+  for (const raw of rawTokens) {
+    if (raw.startsWith('-')) {
+      const neg = raw.slice(1);
+      if (!neg || neg.includes('-') || !termRe.test(neg)) throw new Error('ERR invalid query');
+      tokens.push('NOT', neg);
+      continue;
+    }
+    const segments = raw.split('-').filter(Boolean);
+    if (segments.length === 0) throw new Error('ERR invalid query');
+    for (const seg of segments) {
+      if (!termRe.test(seg)) throw new Error('ERR invalid query');
+      tokens.push(seg);
+    }
   }
-  return trimmed;
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    if (tokens[i] === 'NOT') {
+      if (i === 0 || i === tokens.length - 1 || tokens[i + 1] === 'NOT') {
+        throw new Error('ERR invalid query');
+      }
+    }
+  }
+
+  return tokens.join(' ');
 }
 
 /**

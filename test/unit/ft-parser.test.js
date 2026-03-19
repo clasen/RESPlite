@@ -5,6 +5,7 @@ import {
   parseFtInfo,
   parseFtAdd,
   parseFtDel,
+  parseFtGet,
   parseFtSearch,
   parseFtSugadd,
   parseFtSugget,
@@ -114,6 +115,20 @@ describe('FT parser', () => {
     it('rejects wrong number of args', () => {
       assert.equal(parseFtDel([buf('a')]).error, 'ERR syntax error');
       assert.equal(parseFtDel([buf('a'), buf('b'), buf('c')]).error, 'ERR syntax error');
+    });
+  });
+
+  describe('parseFtGet', () => {
+    it('accepts index and doc_id', () => {
+      const r = parseFtGet([buf('names'), buf('doc1')]);
+      assert.ok(!r.error);
+      assert.equal(r.indexName, 'names');
+      assert.equal(r.docId, 'doc1');
+    });
+
+    it('rejects wrong number of args', () => {
+      assert.equal(parseFtGet([buf('a')]).error, 'ERR syntax error');
+      assert.equal(parseFtGet([buf('a'), buf('b'), buf('c')]).error, 'ERR syntax error');
     });
   });
 

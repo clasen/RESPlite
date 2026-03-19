@@ -6,6 +6,7 @@ import {
   getIndexMeta,
   getIndexCounts,
   addDocument,
+  getDocumentFields,
   deleteDocument,
   search,
   suggestionAdd,
@@ -63,6 +64,23 @@ describe('Search layer', () => {
     assert.throws(() => addDocument(db, 'names', 'doc3', 1, true, { payload: 'x', unknown: 'y' }), /unknown field/);
   });
 
+  it('getDocumentFields returns null when doc missing, flat array in schema order', () => {
+    assert.equal(getDocumentFields(db, 'names', 'no-such-doc'), null);
+    addDocument(db, 'names', 'gd1', 1, true, { payload: 'hello' });
+    assert.deepEqual(getDocumentFields(db, 'names', 'gd1'), ['payload', 'hello']);
+    addDocument(db, 'names', 'gd2', 1, true, { payload: '' });
+    assert.deepEqual(getDocumentFields(db, 'names', 'gd2'), ['payload', null]);
+  });
+
+  it('getDocumentFields multi-field schema order', () => {
+    createIndex(db, 'mf', [
+      { name: 'payload', type: 'TEXT' },
+      { name: 'title', type: 'TEXT' },
+    ]);
+    addDocument(db, 'mf', 'm1', 1, true, { payload: 'pval', title: 'tval' });
+    assert.deepEqual(getDocumentFields(db, 'mf', 'm1'), ['payload', 'pval', 'title', 'tval']);
+  });
+
   it('deleteDocument returns 1 when found, 0 when not', () => {
     addDocument(db, 'names', 'todel', 1, true, { payload: 'to delete' });
     assert.equal(deleteDocument(db, 'names', 'todel'), 1);
@@ -92,9 +110,43 @@ describe('Search layer', () => {
     assert.ok(Array.isArray(r.docIds));
   });
 
+  it('search dotted prefix query works', () => {
+    addDocument(db, 'names', 'mail1', 1, true, { payload: 'martin clasen martin.clasen@gmail.com' });
+    const r = search(db, 'names', 'martin.clasen*', { noContent: true });
+    assert.ok(r.total >= 1);
+    assert.ok(r.docIds.includes('mail1'));
+  });
+
+  it('search tokenization stays flexible across punctuation', () => {
+    addDocument(db, 'names', 'chars1', 1, true, {
+      payload: 'martin-clasen martin@clasen.com #martin who? alpha+beta foo/bar baz,qux',
+    });
+    assert.ok(search(db, 'names', 'who?', { noContent: true }).docIds.includes('chars1'));
+    assert.ok(search(db, 'names', 'alpha+beta', { noContent: true }).docIds.includes('chars1'));
+    assert.ok(search(db, 'names', 'foo/bar', { noContent: true }).docIds.includes('chars1'));
+    assert.ok(search(db, 'names', 'baz,qux', { noContent: true }).docIds.includes('chars1'));
+    assert.ok(search(db, 'names', '(martin)', { noContent: true }).docIds.includes('chars1'));
+    assert.ok(search(db, 'names', '#martin*', { noContent: true }).docIds.includes('chars1'));
+  });
+
+  it('search hyphen inside term is treated as separator', () => {
+    addDocument(db, 'names', 'hyphen1', 1, true, { payload: 'martin clasen' });
+    const r = search(db, 'names', 'martin-clasen*', { noContent: true });
+    assert.ok(r.total >= 1);
+    assert.ok(r.docIds.includes('hyphen1'));
+  });
+
+  it('search leading minus uses NOT operator semantics', () => {
+    addDocument(db, 'names', 'neg1', 1, true, { payload: 'martin clasen' });
+    const r = search(db, 'names', 'martin -clasen*', { noContent: true });
+    assert.equal(r.total, 0);
+  });
+
   it('search invalid query throws', () => {
     assert.throws(() => search(db, 'names', ''), /invalid query/);
     assert.throws(() => search(db, 'names', 'foo"bar'), /invalid query/);
+    assert.throws(() => search(db, 'names', 'martin@clasen*'), /syntax error/);
+    assert.throws(() => search(db, 'names', 'martin:clasen'), /syntax error/);
   });
 
   it('suggestionAdd returns 1 on insert, 0 on update', () => {

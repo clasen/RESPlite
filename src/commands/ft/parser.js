@@ -132,6 +132,22 @@ export function parseFtDel(args) {
 }
 
 /**
+ * Parse FT.GET args: IndexName DocId (same doc id rules as FT.DEL)
+ * @param {Buffer[]} args
+ * @returns {{ indexName: string, docId: string } | { error: string }}
+ */
+export function parseFtGet(args) {
+  if (!args || args.length !== 2) return { error: 'ERR syntax error' };
+  expectUtf8(args[0]);
+  expectUtf8(args[1]);
+  const indexName = toStr(args[0]).trim();
+  const docId = toStr(args[1]);
+  if (!INDEX_NAME_RE.test(indexName)) return { error: 'ERR invalid index name' };
+  if (docId.length < 1 || docId.length > 256 || docId.includes('\u0000')) return { error: 'ERR syntax error' };
+  return { indexName, docId };
+}
+
+/**
  * Parse FT.SEARCH args: IndexName Query [NOCONTENT] [LIMIT offset count]
  * @param {Buffer[]} args
  * @returns {{ indexName: string, query: string, noContent: boolean, offset: number, count: number } | { error: string }}

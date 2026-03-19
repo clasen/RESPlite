@@ -39,6 +39,17 @@ describe('Search integration', () => {
     assert.equal(tryParseValue(ok, 0).value, 'OK');
   });
 
+  it('FT.GET returns field array for indexed doc and nil when missing', async () => {
+    const miss = await sendCommand(port, argv('FT.GET', 'names', 'no-such'));
+    assert.equal(tryParseValue(miss, 0).value, null);
+
+    const hit = await sendCommand(port, argv('FT.GET', 'names', 'DY1O2'));
+    const arr = tryParseValue(hit, 0).value;
+    assert.ok(Array.isArray(arr));
+    assert.equal(arr[0].toString?.('utf8') ?? arr[0], 'payload');
+    assert.equal(arr[1].toString?.('utf8') ?? arr[1], 'martin clasen');
+  });
+
   it('FT.SEARCH returns NOCONTENT shape and total', async () => {
     const reply = await sendCommand(port, argv('FT.SEARCH', 'names', 'clasen', 'NOCONTENT', 'LIMIT', '0', '25'));
     const arr = tryParseValue(reply, 0).value;
@@ -53,6 +64,72 @@ describe('Search integration', () => {
     const arr = tryParseValue(reply, 0).value;
     assert.ok(Array.isArray(arr));
     assert.ok(arr[0] >= 0);
+  });
+
+  it('FT.SEARCH dotted prefix query works', async () => {
+    const ok = await sendCommand(
+      port,
+      argv('FT.ADD', 'names', 'MAIL1', '1', 'REPLACE', 'FIELDS', 'payload', 'martin clasen martin.clasen@gmail.com')
+    );
+    assert.equal(tryParseValue(ok, 0).value, 'OK');
+
+    const reply = await sendCommand(port, argv('FT.SEARCH', 'names', 'martin.clasen*', 'NOCONTENT', 'LIMIT', '0', '10'));
+    const arr = tryParseValue(reply, 0).value;
+    assert.ok(Array.isArray(arr));
+    assert.ok(arr[0] >= 1);
+    const docIds = arr.slice(1).map((v) => (v?.toString ? v.toString('utf8') : String(v)));
+    assert.ok(docIds.includes('MAIL1'));
+  });
+
+  it('FT.SEARCH handles punctuation tokenization flexibly', async () => {
+    const ok = await sendCommand(
+      port,
+      argv(
+        'FT.ADD',
+        'names',
+        'CHARS1',
+        '1',
+        'REPLACE',
+        'FIELDS',
+        'payload',
+        'martin-clasen martin@clasen.com #martin who? alpha+beta foo/bar baz,qux'
+      )
+    );
+    assert.equal(tryParseValue(ok, 0).value, 'OK');
+
+    for (const q of ['who?', 'alpha+beta', 'foo/bar', 'baz,qux', '(martin)', '#martin*']) {
+      const reply = await sendCommand(port, argv('FT.SEARCH', 'names', q, 'NOCONTENT', 'LIMIT', '0', '10'));
+      const arr = tryParseValue(reply, 0).value;
+      assert.ok(Array.isArray(arr));
+      const docIds = arr.slice(1).map((v) => (v?.toString ? v.toString('utf8') : String(v)));
+      assert.ok(docIds.includes('CHARS1'));
+    }
+  });
+
+  it('FT.SEARCH keeps Redis-like syntax errors for @ and :', async () => {
+    const atReply = await sendCommand(port, argv('FT.SEARCH', 'names', 'martin@clasen*', 'NOCONTENT'));
+    const atVal = tryParseValue(atReply, 0).value;
+    const atErr = String(atVal?.error ?? atVal);
+    assert.ok(atErr.includes('syntax error'));
+
+    const colonReply = await sendCommand(port, argv('FT.SEARCH', 'names', 'martin:clasen', 'NOCONTENT'));
+    const colonVal = tryParseValue(colonReply, 0).value;
+    const colonErr = String(colonVal?.error ?? colonVal);
+    assert.ok(colonErr.includes('syntax error'));
+  });
+
+  it('FT.SEARCH treats hyphen inside term as separator', async () => {
+    const reply = await sendCommand(port, argv('FT.SEARCH', 'names', 'martin-clasen*', 'NOCONTENT', 'LIMIT', '0', '10'));
+    const arr = tryParseValue(reply, 0).value;
+    assert.ok(Array.isArray(arr));
+    assert.ok(arr[0] >= 1);
+  });
+
+  it('FT.SEARCH keeps NOT semantics for leading minus', async () => {
+    const reply = await sendCommand(port, argv('FT.SEARCH', 'names', 'martin -clasen*', 'NOCONTENT', 'LIMIT', '0', '10'));
+    const arr = tryParseValue(reply, 0).value;
+    assert.ok(Array.isArray(arr));
+    assert.equal(arr[0], 0);
   });
 
   it('FT.SEARCH LIMIT applies', async () => {
@@ -118,6 +195,40 @@ describe('Search integration', () => {
     const v = tryParseValue(reply, 0).value;
     const err = v?.error ?? v;
     assert.ok(String(err).includes('Unknown index name'));
+  });
+
+  it('FT.SEARCH prefix query should not match unrelated terms', async () => {
+    // Create a fresh index for this test
+    await sendCommand(port, argv('FT.CREATE', 'bugtest', 'SCHEMA', 'payload', 'TEXT'));
+    
+    // Add document with "gorge" first
+    await sendCommand(port, argv('FT.ADD', 'bugtest', 'DOC1', '1', 'REPLACE', 'FIELDS', 'payload', 'gorge'));
+    
+    // Verify it matches gorge*
+    const gorge1 = await sendCommand(port, argv('FT.SEARCH', 'bugtest', 'gorge*', 'NOCONTENT', 'LIMIT', '0', '10'));
+    const g1 = tryParseValue(gorge1, 0).value;
+    assert.equal(g1[0], 1, 'gorge* should match gorge');
+    assert.equal(g1[1].toString?.('utf8') ?? g1[1], 'DOC1');
+    
+    // Replace with "martan"
+    await sendCommand(port, argv('FT.ADD', 'bugtest', 'DOC1', '1', 'REPLACE', 'FIELDS', 'payload', 'martan'));
+    
+    // Verify FT.GET shows only martan
+    const get = await sendCommand(port, argv('FT.GET', 'bugtest', 'DOC1'));
+    const getArr = tryParseValue(get, 0).value;
+    assert.equal(getArr[0].toString?.('utf8') ?? getArr[0], 'payload');
+    assert.equal(getArr[1].toString?.('utf8') ?? getArr[1], 'martan');
+    
+    // martan* should match
+    const martan = await sendCommand(port, argv('FT.SEARCH', 'bugtest', 'martan*', 'NOCONTENT', 'LIMIT', '0', '10'));
+    const m = tryParseValue(martan, 0).value;
+    assert.equal(m[0], 1, 'martan* should match martan');
+    assert.equal(m[1].toString?.('utf8') ?? m[1], 'DOC1');
+    
+    // gorge* should NOT match martan
+    const gorge2 = await sendCommand(port, argv('FT.SEARCH', 'bugtest', 'gorge*', 'NOCONTENT', 'LIMIT', '0', '10'));
+    const g2 = tryParseValue(gorge2, 0).value;
+    assert.equal(g2[0], 0, 'gorge* should NOT match martan - this is the bug');
   });
 });
 
