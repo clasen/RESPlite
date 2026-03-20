@@ -113,6 +113,26 @@ describe('Search layer', () => {
     assert.equal(search(db, 'legacy_stale', 'bicho*', { noContent: true }).total, 0);
   });
 
+  it('allocator seeds above existing docmap rowids on legacy databases', () => {
+    createIndex(db, 'legacy_seed', [{ name: 'payload', type: 'TEXT' }]);
+    const docsT = 'search_docs__legacy_seed';
+    const docmapT = 'search_docmap__legacy_seed';
+    const ftsT = 'search_fts__legacy_seed';
+    const now = Date.now();
+
+    db.prepare(
+      `INSERT INTO ${docsT}(doc_id, score, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`
+    ).run('old-doc', 1, JSON.stringify({ payload: 'legacy payload' }), now, now);
+    db.prepare(`INSERT INTO ${docmapT}(doc_id, fts_rowid) VALUES (?, ?)`).run('old-doc', 42);
+    db.prepare(`INSERT INTO ${ftsT}(rowid, payload) VALUES (?, ?)`).run(42, 'legacy payload');
+
+    addDocument(db, 'legacy_seed', 'new-doc', 1, true, { payload: 'fresh payload' });
+
+    const newMap = db.prepare(`SELECT fts_rowid FROM ${docmapT} WHERE doc_id = ?`).get('new-doc');
+    assert.ok(newMap.fts_rowid > 42);
+    assert.equal(search(db, 'legacy_seed', 'fresh*', { noContent: true }).total, 1);
+  });
+
   it('search with NOCONTENT returns total and doc ids', () => {
     const r = search(db, 'names', 'hello', { noContent: true, offset: 0, count: 10 });
     assert.equal(typeof r.total, 'number');

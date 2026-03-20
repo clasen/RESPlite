@@ -72,11 +72,17 @@ function deleteFtsRow(db, ftsTableName, ftsRowid, fieldNames, fields) {
  * Allocate a monotonic FTS rowid that is never reused, even after deletes.
  * This prevents legacy stale tokens from being remapped to a new document.
  * @param {import('better-sqlite3').Database} db
+ * @param {string} docmapTableName
  * @returns {number}
  */
-function allocateFtsRowid(db) {
-  const info = db.prepare('INSERT INTO search_rowid_allocator DEFAULT VALUES').run();
-  return Number(info.lastInsertRowid);
+function allocateFtsRowid(db, docmapTableName) {
+  const maxDocmapRowid = db
+    .prepare(`SELECT COALESCE(MAX(fts_rowid), 0) AS m FROM ${docmapTableName}`)
+    .get().m;
+  const maxAllocated = db.prepare('SELECT COALESCE(MAX(id), 0) AS m FROM search_rowid_allocator').get().m;
+  const nextRowid = Math.max(maxDocmapRowid, maxAllocated) + 1;
+  db.prepare('INSERT INTO search_rowid_allocator(id) VALUES (?)').run(nextRowid);
+  return nextRowid;
 }
 
 /**
@@ -206,7 +212,7 @@ export function addDocument(db, idx, docId, score, replace, fields) {
     if (existing) {
       if (!replace) throw new Error('ERR document exists');
       const previousRowid = existing.fts_rowid;
-      ftsRowid = allocateFtsRowid(db);
+      ftsRowid = allocateFtsRowid(db, docmapT);
       db.prepare(`UPDATE ${docmapT} SET fts_rowid = ? WHERE doc_id = ?`).run(ftsRowid, docId);
       const oldDoc = db.prepare(`SELECT fields_json FROM ${docsT} WHERE doc_id = ?`).get(docId);
       if (oldDoc?.fields_json) {
@@ -214,7 +220,7 @@ export function addDocument(db, idx, docId, score, replace, fields) {
         deleteFtsRow(db, ftsT, previousRowid, fieldNames, oldFields);
       }
     } else {
-      ftsRowid = allocateFtsRowid(db);
+      ftsRowid = allocateFtsRowid(db, docmapT);
       db.prepare(`INSERT INTO ${docmapT}(doc_id, fts_rowid) VALUES (?, ?)`).run(docId, ftsRowid);
     }
 
