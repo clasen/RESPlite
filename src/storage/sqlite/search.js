@@ -69,6 +69,17 @@ function deleteFtsRow(db, ftsTableName, ftsRowid, fieldNames, fields) {
 }
 
 /**
+ * Allocate a monotonic FTS rowid that is never reused, even after deletes.
+ * This prevents legacy stale tokens from being remapped to a new document.
+ * @param {import('better-sqlite3').Database} db
+ * @returns {number}
+ */
+function allocateFtsRowid(db) {
+  const info = db.prepare('INSERT INTO search_rowid_allocator DEFAULT VALUES').run();
+  return Number(info.lastInsertRowid);
+}
+
+/**
  * Build canonical schema JSON (fields sorted by name). D.12.2
  * @param {{ name: string, type: string }[]} fields
  * @returns {string}
@@ -194,15 +205,16 @@ export function addDocument(db, idx, docId, score, replace, fields) {
     let ftsRowid;
     if (existing) {
       if (!replace) throw new Error('ERR document exists');
-      ftsRowid = existing.fts_rowid;
+      const previousRowid = existing.fts_rowid;
+      ftsRowid = allocateFtsRowid(db);
+      db.prepare(`UPDATE ${docmapT} SET fts_rowid = ? WHERE doc_id = ?`).run(ftsRowid, docId);
       const oldDoc = db.prepare(`SELECT fields_json FROM ${docsT} WHERE doc_id = ?`).get(docId);
       if (oldDoc?.fields_json) {
         const oldFields = JSON.parse(oldDoc.fields_json);
-        deleteFtsRow(db, ftsT, ftsRowid, fieldNames, oldFields);
+        deleteFtsRow(db, ftsT, previousRowid, fieldNames, oldFields);
       }
     } else {
-      const maxRow = db.prepare(`SELECT COALESCE(MAX(rowid), 0) AS m FROM ${ftsT}`).get();
-      ftsRowid = maxRow.m + 1;
+      ftsRowid = allocateFtsRowid(db);
       db.prepare(`INSERT INTO ${docmapT}(doc_id, fts_rowid) VALUES (?, ?)`).run(docId, ftsRowid);
     }
 

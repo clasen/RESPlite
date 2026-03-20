@@ -72,6 +72,10 @@ CREATE TABLE IF NOT EXISTS search_indices (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS search_rowid_allocator (
+  id INTEGER PRIMARY KEY AUTOINCREMENT
+);
 `;
 
 /** Type enum: 1=string, 2=hash, 3=set, 4=list, 5=zset */

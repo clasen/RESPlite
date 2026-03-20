@@ -88,6 +88,31 @@ describe('Search layer', () => {
     assert.equal(deleteDocument(db, 'names', 'nonexistent'), 0);
   });
 
+  it('delete + re-add never remaps legacy stale tokens', () => {
+    createIndex(db, 'legacy_stale', [{ name: 'payload', type: 'TEXT' }]);
+    addDocument(db, 'legacy_stale', 'doc1', 1, true, { payload: 'gorrion' });
+
+    const mapped = db
+      .prepare('SELECT fts_rowid FROM search_docmap__legacy_stale WHERE doc_id = ?')
+      .get('doc1');
+    const oldRowid = mapped.fts_rowid;
+
+    // Simulate a legacy-polluted index row where stale term postings exist for the same rowid.
+    db.prepare('INSERT INTO search_fts__legacy_stale(rowid, payload) VALUES (?, ?)').run(oldRowid, 'bicho');
+
+    assert.equal(search(db, 'legacy_stale', 'bicho*', { noContent: true }).total, 1);
+    assert.equal(deleteDocument(db, 'legacy_stale', 'doc1'), 1);
+
+    addDocument(db, 'legacy_stale', 'doc1', 1, true, { payload: 'gorrion' });
+    const remapped = db
+      .prepare('SELECT fts_rowid FROM search_docmap__legacy_stale WHERE doc_id = ?')
+      .get('doc1');
+    assert.notEqual(remapped.fts_rowid, oldRowid);
+
+    assert.equal(search(db, 'legacy_stale', 'gorrion*', { noContent: true }).total, 1);
+    assert.equal(search(db, 'legacy_stale', 'bicho*', { noContent: true }).total, 0);
+  });
+
   it('search with NOCONTENT returns total and doc ids', () => {
     const r = search(db, 'names', 'hello', { noContent: true, offset: 0, count: 10 });
     assert.equal(typeof r.total, 'number');
