@@ -36,6 +36,9 @@ import * as hdel from './hdel.js';
 import * as hlen from './hlen.js';
 import * as hexists from './hexists.js';
 import * as hincrby from './hincrby.js';
+import * as hexpireCmd from './hexpire.js';
+import * as httlCmd from './httl.js';
+import * as hpersistCmd from './hpersist.js';
 import * as sadd from './sadd.js';
 import * as srem from './srem.js';
 import * as smembers from './smembers.js';
@@ -122,6 +125,9 @@ const HANDLERS = new Map([
   ['HLEN', (e, a) => hlen.handleHlen(e, a)],
   ['HEXISTS', (e, a) => hexists.handleHexists(e, a)],
   ['HINCRBY', (e, a) => hincrby.handleHincrby(e, a)],
+  ['HEXPIRE', (e, a) => hexpireCmd.handleHexpire(e, a)],
+  ['HTTL', (e, a) => httlCmd.handleHttl(e, a)],
+  ['HPERSIST', (e, a) => hpersistCmd.handleHpersist(e, a)],
   ['SADD', (e, a) => sadd.handleSadd(e, a)],
   ['SREM', (e, a) => srem.handleSrem(e, a)],
   ['SMEMBERS', (e, a) => smembers.handleSmembers(e, a)],

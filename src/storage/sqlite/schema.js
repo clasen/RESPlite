@@ -66,6 +66,17 @@ CREATE TABLE IF NOT EXISTS redis_zsets (
 CREATE INDEX IF NOT EXISTS redis_zsets_key_score_member_idx
   ON redis_zsets(key, score, member);
 
+CREATE TABLE IF NOT EXISTS redis_hash_field_ttl (
+  key BLOB NOT NULL,
+  field BLOB NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (key, field),
+  FOREIGN KEY(key) REFERENCES redis_keys(key) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS redis_hash_field_ttl_expires_at_idx
+  ON redis_hash_field_ttl(expires_at);
+
 CREATE TABLE IF NOT EXISTS search_indices (
   name TEXT PRIMARY KEY,
   schema_json TEXT NOT NULL,

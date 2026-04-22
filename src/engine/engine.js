@@ -16,14 +16,13 @@ import { asKey, asValue } from '../util/buffers.js';
 
 export function createEngine(opts = {}) {
   const { db, cache } = opts;
+  const clock = opts.clock ?? (() => Date.now());
   const keys = createKeysStorage(db);
   const strings = createStringsStorage(db, keys);
-  const hashes = createHashesStorage(db, keys);
+  const hashes = createHashesStorage(db, keys, { clock });
   const sets = createSetsStorage(db, keys);
   const lists = createListsStorage(db, keys);
   const zsets = createZsetsStorage(db, keys);
-
-  const clock = opts.clock ?? (() => Date.now());
 
   function _incrBy(key, delta) {
     const k = asKey(key);
@@ -252,6 +251,44 @@ export function createEngine(opts = {}) {
       const amt = parseInt(Buffer.isBuffer(amount) ? amount.toString() : String(amount), 10);
       if (Number.isNaN(amt)) throw new Error('ERR value is not an integer or out of range');
       return hashes.incr(k, asKey(field), amt);
+    },
+
+    /**
+     * HEXPIRE: apply absolute expiresAtMs to each hash field with optional NX/XX/GT/LT.
+     * Returns an array of integers per spec: -2 (missing), 0 (cond), 1 (set), 2 (deleted).
+     */
+    hexpire(key, expiresAtMs, fields, { condition = null } = {}) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return fields.map(() => -2);
+      expectHash(meta);
+      return fields.map((f) => hashes.setFieldExpire(k, asKey(f), expiresAtMs, { condition }));
+    },
+
+    /**
+     * HTTL: seconds remaining per field. -2 missing, -1 no TTL, else seconds.
+     */
+    httl(key, fields) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return fields.map(() => -2);
+      expectHash(meta);
+      return fields.map((f) => {
+        const ms = hashes.getFieldTtl(k, asKey(f));
+        if (ms < 0) return ms;
+        return Math.floor(ms / 1000);
+      });
+    },
+
+    /**
+     * HPERSIST: clear field TTL. -2 missing, -1 no TTL, 1 cleared.
+     */
+    hpersist(key, fields) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return fields.map(() => -2);
+      expectHash(meta);
+      return fields.map((f) => hashes.persistField(k, asKey(f)));
     },
 
     sadd(key, ...members) {
