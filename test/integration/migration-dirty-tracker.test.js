@@ -27,7 +27,13 @@ const PREFIX    = `__resplite_tracker_test_${process.pid}__`;
 
 /** Connect to local Redis; return null if unavailable. */
 async function tryConnectRedis() {
-  const client = createClient({ url: REDIS_URL });
+  const client = createClient({
+    url: REDIS_URL,
+    socket: {
+      connectTimeout: 1500,
+      reconnectStrategy: () => new Error('no reconnect in tests'),
+    },
+  });
   try {
     await client.connect();
     await client.ping();
