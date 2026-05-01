@@ -26,6 +26,7 @@ const DEFAULT_PORT = 6379;
  * @param {string} [options.pragmaTemplate]
  * @param {Record<string, string|number>} [options.pragma] Override specific pragmas when needed (e.g. { synchronous: 'FULL' }). Convention: template is applied by default.
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to close server and DB. Set false if you handle shutdown yourself.
+ * @param {{ rename?: Record<string, string>, disabled?: string[] } | null} [options.commandPolicy] Optional: rename/disable commands for hardening.
  */
 export function startServer(options = {}) {
   const dbPath = options.dbPath ?? process.env.RESPLITE_DB ?? DEFAULT_DB_PATH;
@@ -45,7 +46,7 @@ export function startServer(options = {}) {
   sweeper.start();
 
   const connections = new Set();
-  const server = createServer({ engine, port, connections });
+  const server = createServer({ engine, port, connections, commandPolicy: options.commandPolicy ?? null });
 
   if (gracefulShutdown) {
     let shuttingDown = false;

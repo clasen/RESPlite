@@ -98,9 +98,13 @@ function spawnResplite(templateName, port, dbPath) {
 }
 
 function formatNum(n) {
+  if (!Number.isFinite(n)) return '—';
   if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
-  return String(n);
+  if (n >= 100) return n.toFixed(2);
+  if (n >= 10) return n.toFixed(2);
+  if (n >= 1) return n.toFixed(2);
+  return n.toFixed(3);
 }
 
 function formatMs(ms) {
@@ -603,23 +607,41 @@ async function main() {
   for (const { client } of respliteClients) await client.quit();
   for (const { child } of children) child.kill();
 
-  const colWidth = 10;
   const headerCols = ['Suite', 'Redis', ...templateNames];
-  const sep = headerCols.map((_, i) => (i === 0 ? '-'.repeat(18) : '-'.repeat(colWidth))).join('|');
-  console.log('');
-  console.log('--- Summary (ops/sec) ---');
-  console.log(headerCols.map((h, i) => (i === 0 ? h.padEnd(18) : h.padStart(colWidth))).join(' | '));
-  console.log(sep);
-  for (const r of results) {
-    if (r.error) {
-      console.log(`${r.suite.padEnd(18)} | ERROR: ${r.error}`);
-      continue;
-    }
+  const summaryRows = results.map((r) => {
+    if (r.error) return { suite: r.suite, values: [`ERROR: ${r.error}`] };
     const redisVal = r.redis.error ? '—' : formatNum(r.redis.opsPerSec);
     const templateVals = templateNames.map((t) => (r.templates[t]?.error ? '—' : formatNum(r.templates[t]?.opsPerSec)));
-    console.log(
-      [r.suite.padEnd(18), redisVal.padStart(colWidth), ...templateVals.map((v) => v.padStart(colWidth))].join(' | ')
-    );
+    return { suite: r.suite, values: [redisVal, ...templateVals] };
+  });
+
+  const suiteWidth = Math.max(
+    headerCols[0].length,
+    ...summaryRows.map((r) => r.suite.length)
+  );
+  const valueWidths = headerCols.slice(1).map((h, idx) =>
+    Math.max(
+      h.length,
+      ...summaryRows.map((r) => (r.values[idx] || '').length)
+    )
+  );
+
+  console.log('');
+  console.log('--- Summary (ops/sec) ---');
+  console.log([
+    headerCols[0].padEnd(suiteWidth),
+    ...headerCols.slice(1).map((h, idx) => h.padStart(valueWidths[idx])),
+  ].join(' | '));
+  console.log([
+    '-'.repeat(suiteWidth),
+    ...valueWidths.map((w) => '-'.repeat(w)),
+  ].join('-|-'));
+
+  for (const row of summaryRows) {
+    console.log([
+      row.suite.padEnd(suiteWidth),
+      ...row.values.map((v, idx) => v.padStart(valueWidths[idx])),
+    ].join(' | '));
   }
 
   console.log('');

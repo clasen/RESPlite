@@ -3,7 +3,7 @@
  */
 
 import { RESPReader } from '../resp/parser.js';
-import { dispatch } from '../commands/registry.js';
+import { compileCommandPolicy, dispatch } from '../commands/registry.js';
 import { encode, encodeSimpleString, encodeError } from '../resp/encoder.js';
 import { registerMonitorClient, unregisterMonitorClient, broadcastMonitorCommand } from './monitor.js';
 
@@ -13,11 +13,13 @@ let nextConnectionId = 0;
  * @param {import('net').Socket} socket
  * @param {object} engine
  * @param {object} [hooks] Optional: onUnknownCommand, onCommandError, onSocketError
+ * @param {object|null} [commandPolicy] Optional: command rename/disable policy.
  */
-export function handleConnection(socket, engine, hooks = {}) {
+export function handleConnection(socket, engine, hooks = {}, commandPolicy = null) {
   const reader = new RESPReader();
   const connectionId = ++nextConnectionId;
   const clientAddress = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 0}`;
+  const compiledCommandPolicy = compileCommandPolicy(commandPolicy);
   const context = {
     connectionId,
     clientAddress,
@@ -29,6 +31,7 @@ export function handleConnection(socket, engine, hooks = {}) {
     onUnknownCommand: hooks.onUnknownCommand,
     onCommandError: hooks.onCommandError,
     onSocketError: hooks.onSocketError,
+    commandPolicy: compiledCommandPolicy,
   };
 
   function writeResult(out) {

@@ -7,17 +7,20 @@ import net from 'node:net';
 import { handleConnection } from '../../src/server/connection.js';
 import { createEngine } from '../../src/engine/engine.js';
 import { openDb } from '../../src/storage/sqlite/db.js';
+import { compileCommandPolicy } from '../../src/commands/registry.js';
 import { tmpDbPath } from './tmp.js';
 
 export function createTestServer(options = {}) {
   const dbPath = options.dbPath || tmpDbPath();
   const db = openDb(dbPath);
   const engine = createEngine({ db });
+  const hooks = options.hooks || {};
+  const commandPolicy = compileCommandPolicy(options.commandPolicy ?? null);
   const connections = new Set();
   const server = net.createServer((socket) => {
     connections.add(socket);
     socket.once('close', () => connections.delete(socket));
-    handleConnection(socket, engine);
+    handleConnection(socket, engine, hooks, commandPolicy);
   });
   return new Promise((resolve, reject) => {
     server.listen(0, '127.0.0.1', () => {

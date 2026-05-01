@@ -91,6 +91,8 @@ import * as monitor from './monitor.js';
 import * as client from './client.js';
 import * as command from './command.js';
 
+const COMPILED_POLICY_TAG = Symbol('compiled-command-policy');
+
 const HANDLERS = new Map([
   ['PING', (e, a) => ping.handlePing()],
   ['ECHO', (e, a) => echo.handleEcho(a)],
@@ -181,6 +183,100 @@ const HANDLERS = new Map([
   ['COMMAND', (e, a, ctx) => command.handleCommand(e, a, ctx)],
 ]);
 
+function assertCommandName(value, field) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`invalid command policy: ${field} must be a non-empty string`);
+  }
+  return value.trim().toUpperCase();
+}
+
+function isCompiledPolicy(value) {
+  return !!(value && typeof value === 'object' && value[COMPILED_POLICY_TAG] === true);
+}
+
+export function compileCommandPolicy(policy = {}) {
+  if (policy == null) return null;
+  if (isCompiledPolicy(policy)) return policy;
+  if (typeof policy !== 'object') {
+    throw new Error('invalid command policy: expected an object');
+  }
+
+  const rename = policy.rename ?? {};
+  const disabled = policy.disabled ?? [];
+
+  if (rename == null || typeof rename !== 'object' || Array.isArray(rename)) {
+    throw new Error('invalid command policy: rename must be an object');
+  }
+  if (!Array.isArray(disabled)) {
+    throw new Error('invalid command policy: disabled must be an array');
+  }
+
+  const knownCommands = new Set(HANDLERS.keys());
+  const renamedOriginals = new Set();
+  const aliasToOriginal = new Map();
+
+  for (const [rawOriginal, rawAlias] of Object.entries(rename)) {
+    const original = assertCommandName(rawOriginal, 'rename key');
+    const alias = assertCommandName(rawAlias, `rename.${rawOriginal}`);
+    if (!knownCommands.has(original)) {
+      throw new Error(`invalid command policy: cannot rename unknown command "${original}"`);
+    }
+    if (alias === original) {
+      throw new Error(`invalid command policy: alias for "${original}" must be different`);
+    }
+    if (knownCommands.has(alias)) {
+      throw new Error(`invalid command policy: alias "${alias}" conflicts with existing command`);
+    }
+    if (aliasToOriginal.has(alias)) {
+      throw new Error(`invalid command policy: alias "${alias}" is duplicated`);
+    }
+    renamedOriginals.add(original);
+    aliasToOriginal.set(alias, original);
+  }
+
+  const disabledSet = new Set();
+  for (const rawName of disabled) {
+    const name = assertCommandName(rawName, 'disabled[] item');
+    disabledSet.add(name);
+  }
+
+  return {
+    [COMPILED_POLICY_TAG]: true,
+    disabledSet,
+    aliasToOriginal,
+    renamedOriginals,
+  };
+}
+
+function listVisibleCommandNames(policy) {
+  const names = [];
+  for (const name of HANDLERS.keys()) {
+    if (policy?.renamedOriginals?.has(name)) continue;
+    if (policy?.disabledSet?.has(name)) continue;
+    names.push(name);
+  }
+  if (policy?.aliasToOriginal) {
+    for (const [alias] of policy.aliasToOriginal.entries()) {
+      if (policy.disabledSet.has(alias)) continue;
+      names.push(alias);
+    }
+  }
+  return names;
+}
+
+function resolveIncomingCommand(inputCommand, policy) {
+  if (!policy) return { blocked: false, resolvedCommand: inputCommand };
+  if (policy.disabledSet.has(inputCommand)) {
+    return { blocked: true, resolvedCommand: inputCommand };
+  }
+  const target = policy.aliasToOriginal.get(inputCommand);
+  if (target) return { blocked: false, resolvedCommand: target };
+  if (policy.renamedOriginals.has(inputCommand)) {
+    return { blocked: true, resolvedCommand: inputCommand };
+  }
+  return { blocked: false, resolvedCommand: inputCommand };
+}
+
 /**
  * Dispatch command. Full argv: [commandNameBuf, ...argBuffers].
  * @param {object} engine
@@ -193,10 +289,22 @@ export function dispatch(engine, argv, context) {
     return { error: 'ERR wrong number of arguments' };
   }
   const cmd = (Buffer.isBuffer(argv[0]) ? argv[0].toString('utf8') : String(argv[0])).toUpperCase();
+  const policy = compileCommandPolicy(context?.commandPolicy);
+  const commandResolution = resolveIncomingCommand(cmd, policy);
+  if (commandResolution.blocked) {
+    return { error: unsupported() };
+  }
+  const resolvedCommand = commandResolution.resolvedCommand;
   const args = argv.slice(1);
   const argvStrings = argv.map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)));
-  if (context) context.getCommandNames = () => Array.from(HANDLERS.keys());
-  const handler = HANDLERS.get(cmd);
+  if (context) {
+    context.getCommandNames = () => listVisibleCommandNames(policy);
+    context.resolveCommandForIntrospection = (name) => {
+      if (!policy) return name;
+      return policy.aliasToOriginal.get(String(name).toUpperCase()) ?? String(name).toUpperCase();
+    };
+  }
+  const handler = HANDLERS.get(resolvedCommand);
   if (!handler) {
     context?.onUnknownCommand?.({
       command: cmd,

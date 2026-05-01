@@ -15,42 +15,42 @@ const WRITE_COMMANDS = new Set([
  * @param {string} name - Command name (lowercase for reply).
  * @returns {Array<string|number|string[]>}
  */
-function docFor(name) {
+function docFor(name, canonicalName = name) {
   const lower = name.toLowerCase();
-  const flags = WRITE_COMMANDS.has(name) ? ['write', 'fast'] : ['readonly', 'fast'];
+  const flags = WRITE_COMMANDS.has(canonicalName) ? ['write', 'fast'] : ['readonly', 'fast'];
   let arity = 2;
   let firstKey = 1;
   let lastKey = 1;
   let step = 1;
-  if (['MGET', 'MSET', 'DEL', 'UNLINK', 'EXISTS', 'KEYS', 'SCAN', 'PING', 'ECHO', 'QUIT', 'TYPE', 'OBJECT', 'SQLITE.INFO', 'CACHE.INFO', 'MEMORY.INFO', 'COMMAND', 'MONITOR', 'CLIENT'].includes(name)) {
-    if (['PING', 'ECHO', 'QUIT', 'COMMAND', 'MONITOR'].includes(name)) {
+  if (['MGET', 'MSET', 'DEL', 'UNLINK', 'EXISTS', 'KEYS', 'SCAN', 'PING', 'ECHO', 'QUIT', 'TYPE', 'OBJECT', 'SQLITE.INFO', 'CACHE.INFO', 'MEMORY.INFO', 'COMMAND', 'MONITOR', 'CLIENT'].includes(canonicalName)) {
+    if (['PING', 'ECHO', 'QUIT', 'COMMAND', 'MONITOR'].includes(canonicalName)) {
       firstKey = 0;
       lastKey = 0;
       step = 0;
-      arity = name === 'COMMAND' ? -1 : (name === 'ECHO' ? 2 : 1);
-    } else if (['MGET', 'EXISTS', 'KEYS', 'SCAN'].includes(name)) {
+      arity = canonicalName === 'COMMAND' ? -1 : (canonicalName === 'ECHO' ? 2 : 1);
+    } else if (['MGET', 'EXISTS', 'KEYS', 'SCAN'].includes(canonicalName)) {
       arity = -2;
       lastKey = -1;
-    } else if (name === 'MSET') {
+    } else if (canonicalName === 'MSET') {
       arity = -3;
       lastKey = -1;
       step = 2;
-    } else if (['DEL', 'UNLINK'].includes(name)) {
+    } else if (['DEL', 'UNLINK'].includes(canonicalName)) {
       arity = -2;
       lastKey = -1;
     }
-  } else if (name.startsWith('FT.') || name.startsWith('SQLITE.') || name.startsWith('CACHE.') || name.startsWith('MEMORY.')) {
+  } else if (canonicalName.startsWith('FT.') || canonicalName.startsWith('SQLITE.') || canonicalName.startsWith('CACHE.') || canonicalName.startsWith('MEMORY.')) {
     firstKey = 0;
     lastKey = 0;
     step = 0;
     arity = -2;
-  } else if (['BLPOP', 'BRPOP'].includes(name)) {
+  } else if (['BLPOP', 'BRPOP'].includes(canonicalName)) {
     arity = -3;
     lastKey = -1;
     step = 1;
-  } else if (['HMGET', 'HGETALL', 'HGET', 'HSET', 'HDEL', 'HEXISTS', 'HINCRBY', 'HLEN'].includes(name)) {
-    arity = (name === 'HGET' || name === 'HLEN' || name === 'HEXISTS') ? 3 : -3;
-  } else if (name === 'SETEX') {
+  } else if (['HMGET', 'HGETALL', 'HGET', 'HSET', 'HDEL', 'HEXISTS', 'HINCRBY', 'HLEN'].includes(canonicalName)) {
+    arity = (canonicalName === 'HGET' || canonicalName === 'HLEN' || canonicalName === 'HEXISTS') ? 3 : -3;
+  } else if (canonicalName === 'SETEX') {
     arity = 4;
   }
   return [lower, arity, flags, firstKey, lastKey, step, []];
@@ -63,10 +63,13 @@ function docFor(name) {
  */
 export function handleCommand(engine, args, context) {
   const allNames = context?.getCommandNames ? context.getCommandNames() : [];
+  const resolveCanonical = context?.resolveCommandForIntrospection
+    ? (name) => context.resolveCommandForIntrospection(name)
+    : (name) => name;
   const sub = (args && args.length > 0 && Buffer.isBuffer(args[0])) ? args[0].toString('utf8').toUpperCase() : '';
 
   if (!sub || sub === '') {
-    const reply = allNames.map((n) => docFor(n));
+    const reply = allNames.map((n) => docFor(n, resolveCanonical(n)));
     return reply;
   }
   if (sub === 'COUNT') {
@@ -75,7 +78,7 @@ export function handleCommand(engine, args, context) {
   if (sub === 'INFO') {
     const names = (args.slice(1) || []).map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)).toUpperCase());
     const set = new Set(allNames);
-    const reply = names.map((n) => set.has(n) ? docFor(n) : null).filter((x) => x != null);
+    const reply = names.map((n) => set.has(n) ? docFor(n, resolveCanonical(n)) : null).filter((x) => x != null);
     return reply;
   }
 

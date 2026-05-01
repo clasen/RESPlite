@@ -62,6 +62,10 @@ const log = new LemonLog('RESPlite');
 const srv = await createRESPlite({
   port: 6380,
   db: './data.db',
+  commandPolicy: {
+    rename: { KEYS: 'SAFE_KEYS' }, // original KEYS is blocked
+    disabled: ['MONITOR'],         // blocked as unsupported
+  },
   hooks: {
     onUnknownCommand({ command, argv, clientAddress }) {
       log.warn({ command, argv, clientAddress }, 'unsupported command');
@@ -83,6 +87,28 @@ Available hooks:
 - `onSocketError`: the connection socket emitted an error, for example `ECONNRESET`.
 
 If you want a tiny in-process smoke test that starts RESPLite and connects with the `redis` client in the same script, see [Minimal embedded example](#minimal-embedded-example) below.
+
+### Command hardening (rename/disable)
+
+You can harden the command surface by renaming sensitive commands and/or disabling them:
+
+```javascript
+const srv = await createRESPlite({
+  db: './secure.db',
+  commandPolicy: {
+    rename: {
+      KEYS: 'SAFE_KEYS',
+      DEL: 'RMDEL',
+    },
+    disabled: ['MONITOR', 'CLIENT'],
+  },
+});
+```
+
+Behavior:
+- `rename`: only the new alias is accepted; the original command name is blocked.
+- `disabled`: command is blocked and replies with `ERR command not supported yet`.
+- `COMMAND`, `COMMAND COUNT`, and `COMMAND INFO` expose only visible commands (including aliases, excluding blocked names).
 
 ## Migration from Redis
 

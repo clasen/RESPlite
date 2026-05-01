@@ -13,6 +13,7 @@ import net from 'node:net';
 import { handleConnection } from './server/connection.js';
 import { createEngine } from './engine/engine.js';
 import { openDb } from './storage/sqlite/db.js';
+import { compileCommandPolicy } from './commands/registry.js';
 
 export { handleConnection, createEngine, openDb };
 
@@ -37,6 +38,7 @@ export { handleConnection, createEngine, openDb };
  * @param {Record<string, string|number>} [options.pragma] Override specific pragmas only when needed (e.g. { synchronous: 'FULL' }). Applied after the template.
  * @param {RESPliteHooks} [options.hooks]         Optional event hooks for observability (onUnknownCommand, onCommandError, onSocketError).
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to call close(). Set false if you handle shutdown yourself to avoid double handlers.
+ * @param {{ rename?: Record<string, string>, disabled?: string[] } | null} [options.commandPolicy] Optional: rename/disable commands for hardening.
  * @returns {Promise<{ port: number, host: string, close: () => Promise<void> }>}
  */
 export async function createRESPlite({
@@ -47,7 +49,9 @@ export async function createRESPlite({
   pragma,
   hooks = {},
   gracefulShutdown = true,
+  commandPolicy = null,
 } = {}) {
+  const compiledCommandPolicy = compileCommandPolicy(commandPolicy);
   const db = openDb(dbPath, { pragmaTemplate, pragma });
   const engine = createEngine({ db });
   const connections = new Set();
@@ -55,7 +59,7 @@ export async function createRESPlite({
   const server = net.createServer((socket) => {
     connections.add(socket);
     socket.once('close', () => connections.delete(socket));
-    handleConnection(socket, engine, hooks);
+    handleConnection(socket, engine, hooks, compiledCommandPolicy);
   });
   await new Promise((resolve) => server.listen(port, host, resolve));
 
