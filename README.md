@@ -108,7 +108,7 @@ const srv = await createRESPlite({
 Behavior:
 - `rename`: only the new alias is accepted; the original command name is blocked.
 - `disabled`: command is blocked and replies with `ERR command not supported yet`.
-- `COMMAND`, `COMMAND COUNT`, and `COMMAND INFO` expose only visible commands (including aliases, excluding blocked names).
+- `COMMAND`, `COMMAND COUNT`, and `COMMAND INFO` hide renamed commands entirely (both original names and aliases), and exclude disabled commands.
 
 ## Migration from Redis
 

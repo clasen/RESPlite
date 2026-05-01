@@ -255,12 +255,6 @@ function listVisibleCommandNames(policy) {
     if (policy?.disabledSet?.has(name)) continue;
     names.push(name);
   }
-  if (policy?.aliasToOriginal) {
-    for (const [alias] of policy.aliasToOriginal.entries()) {
-      if (policy.disabledSet.has(alias)) continue;
-      names.push(alias);
-    }
-  }
   return names;
 }
 

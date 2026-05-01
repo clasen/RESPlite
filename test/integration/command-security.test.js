@@ -57,24 +57,19 @@ describe('command hardening policy', () => {
     assert.equal(asUtf8(reply.error), 'ERR command not supported yet');
   });
 
-  it('COMMAND only exposes visible names and keeps canonical metadata', async () => {
+  it('COMMAND hides renamed commands (original and alias)', async () => {
     const listReply = parseResp(await sendCommand(port, argv('COMMAND')));
     assert.ok(Array.isArray(listReply));
     const names = listReply.map((doc) => asUtf8(doc[0]).toUpperCase());
-    assert.ok(names.includes('SAFE_KEYS'));
-    assert.ok(names.includes('RMDEL'));
     assert.ok(!names.includes('KEYS'));
     assert.ok(!names.includes('DEL'));
+    assert.ok(!names.includes('SAFE_KEYS'));
+    assert.ok(!names.includes('RMDEL'));
     assert.ok(!names.includes('MONITOR'));
 
     const infoReply = parseResp(await sendCommand(port, argv('COMMAND', 'INFO', 'RMDEL')));
     assert.ok(Array.isArray(infoReply));
-    assert.equal(infoReply.length, 1);
-    const rmDelDoc = infoReply[0];
-    assert.equal(asUtf8(rmDelDoc[0]), 'rmdel');
-    assert.equal(rmDelDoc[1], -2);
-    const flags = rmDelDoc[2].map(asUtf8);
-    assert.ok(flags.includes('write'));
+    assert.equal(infoReply.length, 0);
   });
 
   it('renamed write command executes through alias and blocks original', async () => {
