@@ -142,6 +142,33 @@ describe('createRESPlite', () => {
     assert.ok(sub.clientAddress.length > 0);
   });
 
+  it('onUnknownCommand hook is also called for disabled commands', async () => {
+    const unknownCalls = [];
+    const srv = await createRESPlite({
+      commandPolicy: {
+        disabled: ['MONITOR'],
+      },
+      hooks: {
+        onUnknownCommand(payload) {
+          unknownCalls.push(payload);
+        },
+      },
+    });
+    const client = await redisClient(srv.port);
+    try {
+      await client.sendCommand(['MONITOR']);
+      assert.fail('expected error');
+    } catch (e) {
+      assert.ok(e.message.includes('not supported'), e.message);
+    }
+    await client.quit();
+    await srv.close();
+
+    assert.equal(unknownCalls.length, 1);
+    assert.equal(unknownCalls[0].command, 'MONITOR');
+    assert.equal(unknownCalls[0].argsCount, 0);
+  });
+
   it('onCommandError hook is called when command returns or throws error', async () => {
     const errorCalls = [];
     const srv = await createRESPlite({

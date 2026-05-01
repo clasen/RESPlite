@@ -289,14 +289,21 @@ export function dispatch(engine, argv, context) {
     return { error: 'ERR wrong number of arguments' };
   }
   const cmd = (Buffer.isBuffer(argv[0]) ? argv[0].toString('utf8') : String(argv[0])).toUpperCase();
+  const args = argv.slice(1);
+  const argvStrings = argv.map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)));
   const policy = compileCommandPolicy(context?.commandPolicy);
   const commandResolution = resolveIncomingCommand(cmd, policy);
   if (commandResolution.blocked) {
+    context?.onUnknownCommand?.({
+      command: cmd,
+      argsCount: args.length,
+      argv: argvStrings ?? [cmd],
+      clientAddress: context?.clientAddress ?? '',
+      connectionId: context?.connectionId ?? 0,
+    });
     return { error: unsupported() };
   }
   const resolvedCommand = commandResolution.resolvedCommand;
-  const args = argv.slice(1);
-  const argvStrings = argv.map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)));
   if (context) {
     context.getCommandNames = () => listVisibleCommandNames(policy);
     context.resolveCommandForIntrospection = (name) => {
