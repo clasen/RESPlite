@@ -1,6 +1,6 @@
 # RESPLite
 
-A RESP server backed by SQLite. Compatible with `redis` clients and `redis-cli`, persistent by default, zero external daemons, and minimal memory footprint.
+A RESP server backed by SQLite. Compatible with `redis` clients and `redis-cli`, persistent by default, with zero external daemons and a configurable application cache.
 
 ## Overview
 
@@ -9,7 +9,7 @@ RESPLite speaks **RESP** (the Redis Serialization Protocol), so your existing `r
 It is not a Redis clone. It covers a practical subset of commands that map naturally to SQLite, suited for single-node workloads where Redis' in-memory latency is not a hard requirement.
 
 - **Zero external services** — just Node.js and a `.db` file.
-- **Drop-in compatible** — works with the official `redis` npm client and `redis-cli`.
+- **Client-compatible** — works with the official `redis` npm client and `redis-cli` for the supported command subset.
 - **Persistent by default** — no snapshots, no AOF, no config.
 - **Embeddable** — start the server and connect from the same script.
 - **Full-text search** — FT.\* commands via SQLite FTS5.
@@ -17,21 +17,21 @@ It is not a Redis clone. It covers a practical subset of commands that map natur
 
 ### When RESPLite beats Redis in Docker
 
-Building this project surfaced a clear finding: **Redis running inside Docker** on the same host often has **worse latency** than **RESPLite running locally**. Docker's virtual network adds overhead that disappears when the server runs in the same process/host. For single-node workloads this makes RESPLite the faster, simpler option.
+Building this project surfaced a clear finding: **Redis running inside Docker** on the same host can have **worse latency** than **RESPLite running locally**. Docker's virtual network adds overhead that is avoided when RESPLite runs directly on the host. Results remain workload- and host-dependent; use the benchmark below to check your own deployment.
 
 The strongest use case is **migrating a non-replicated Redis instance that has grown large** (tens of GB). You don't need to manage replicas, AOF, or RDB. Once migrated, you get a single SQLite file and latency that is good enough for most workloads. The built-in migration tooling (see [Migration from Redis](#migration-from-redis)) handles datasets of that size with minimal downtime.
 
 ### Benchmark snapshot
 
-Representative results against Redis in Docker on the same host:
+Representative results against Redis in Docker on the same host (10k iterations per suite):
 
 | Suite         | Redis (Docker) | RESPLite (default) |
 |---------------|----------------|--------------------|
-| PING          | 8.79K/s        | 37.36K/s           |
-| SET+GET       | 4.68K/s        | 11.96K/s           |
-| HSET+HGET     | 4.40K/s        | 11.91K/s           |
-| ZADD+ZRANGE   | 7.80K/s        | 17.12K/s           |
-| FT.SEARCH     | 8.36K/s        | 8.22K/s            |
+| PING          | 9.32K/s        | 25.14K/s           |
+| SET+GET       | 4.75K/s        | 8.92K/s            |
+| HSET+HGET     | 4.72K/s        | 9.75K/s            |
+| ZADD+ZRANGE   | 8.49K/s        | 11.38K/s           |
+| FT.SEARCH     | 8.32K/s        | 7.70K/s            |
 
 The full benchmark table is available later in [Benchmark](#benchmark-redis-vs-resplite).
 
@@ -574,30 +574,69 @@ const srv = await createRESPlite({
 
 ## Benchmark (Redis vs RESPLite)
 
-A typical comparison is **Redis (for example, in Docker)** on one side and **RESPLite locally** on the other. In that setup, RESPLite often shows **better latency** because it avoids Docker networking and runs in the same process or host. The benchmark below uses RESPLite with the **default** PRAGMA template only.
+A typical comparison is **Redis (for example, in Docker)** on one side and **RESPLite locally** on the other. In that setup, RESPLite can show **better latency** because it avoids Docker networking. The benchmark starts each RESPLite PRAGMA template in an isolated process on the host.
 
-**Example results (Redis vs RESPLite, default pragma, 10k iterations):**
+**Example results (Redis vs all RESPLite PRAGMA templates, 10k iterations per suite):**
 
-| Suite             | Redis (Docker) | RESPLite (default) |
-|-------------------|----------------|--------------------|
-| PING              | 9.72K/s        | 37.66K/s           |
-| SET+GET           | 4.60K/s        | 11.96K/s           |
-| MSET+MGET(10)     | 4.38K/s        | 5.71K/s            |
-| INCR              | 9.76K/s        | 19.15K/s           |
-| HSET+HGET         | 4.42K/s        | 11.71K/s           |
-| HGETALL(50)       | 8.42K/s        | 11.12K/s           |
-| HLEN(50)          | 8.88K/s        | 30.72K/s           |
-| SADD+SMEMBERS     | 8.33K/s        | 18.19K/s           |
-| LPUSH+LRANGE      | 8.29K/s        | 14.78K/s           |
-| LREM              | 4.85K/s        | 6.35K/s            |
-| ZADD+ZRANGE       | 9.37K/s        | 16.43K/s           |
-| ZADD+ZREVRANGE    | 8.22K/s        | 16.82K/s           |
-| ZRANK+ZREVRANK    | 4.56K/s        | 13.03K/s           |
-| ZREVRANGEBYSCORE  | 8.88K/s        | 16.88K/s           |
-| SET+DEL           | 4.75K/s        | 9.99K/s            |
-| FT.SEARCH         | 8.39K/s        | 8.81K/s            |
+Throughput is measured in complete suite iterations per second, so a row such as `SET+GET` represents one `SET`/`GET` pair per iteration rather than two separately counted commands.
 
-To reproduce the benchmark, run `npm run benchmark -- --template default`. Numbers depend on host and whether Redis is native or in Docker.
+| Suite | Redis (Docker) | default | performance | safety | minimal |
+|---|---:|---:|---:|---:|---:|
+| PING | 9.32K/s | 25.14K/s | 25.19K/s | 25.11K/s | 25.30K/s |
+| SET+GET | 4.75K/s | 8.92K/s | 10.22K/s | 7.42K/s | 8.87K/s |
+| GET (hot) | 9.54K/s | 26.20K/s | 26.17K/s | 26.11K/s | 26.29K/s |
+| MSET+MGET(10) | 4.32K/s | 6.79K/s | 7.73K/s | 5.93K/s | 6.79K/s |
+| INCR | 10.55K/s | 15.30K/s | 19.95K/s | 11.62K/s | 15.31K/s |
+| HSET+HGET | 4.72K/s | 9.75K/s | 11.04K/s | 8.05K/s | 9.78K/s |
+| HGET (uncached) | 9.27K/s | 20.00K/s | 21.07K/s | 19.93K/s | 19.98K/s |
+| HGET (hot) | 9.07K/s | 15.45K/s | 14.44K/s | 15.82K/s | 16.45K/s |
+| HMGET(10) (hot) | 8.33K/s | 20.37K/s | 20.40K/s | 20.39K/s | 20.46K/s |
+| HGETALL(50) | 8.49K/s | 11.58K/s | 11.56K/s | 11.59K/s | 11.58K/s |
+| HLEN(50) (uncached) | 9.00K/s | 23.40K/s | 24.42K/s | 23.46K/s | 23.46K/s |
+| HLEN(50) (hot) | 9.51K/s | 28.68K/s | 28.60K/s | 28.59K/s | 28.93K/s |
+| SADD+SMEMBERS | 9.25K/s | 16.35K/s | 16.87K/s | 12.18K/s | 16.28K/s |
+| LPUSH+LRANGE | 9.37K/s | 10.38K/s | 11.23K/s | 8.45K/s | 10.36K/s |
+| LREM | 4.47K/s | 4.60K/s | 4.93K/s | 3.83K/s | 4.60K/s |
+| ZADD+ZRANGE | 8.49K/s | 11.38K/s | 12.49K/s | 9.16K/s | 11.35K/s |
+| ZADD+ZREVRANGE | 8.21K/s | 10.85K/s | 12.03K/s | 8.85K/s | 10.85K/s |
+| ZRANK+ZREVRANK | 5.13K/s | 9.93K/s | 10.58K/s | 9.93K/s | 9.95K/s |
+| ZREVRANGEBYSCORE | 9.49K/s | 14.22K/s | 14.66K/s | 14.20K/s | 14.22K/s |
+| SET+DEL | 5.12K/s | 5.62K/s | 6.17K/s | 4.65K/s | 5.62K/s |
+| STRLEN | 10.15K/s | 27.53K/s | 27.58K/s | 27.55K/s | 27.73K/s |
+| HKEYS(50) | 9.25K/s | 17.51K/s | 17.53K/s | 17.55K/s | 17.60K/s |
+| HVALS(50) | 8.99K/s | 15.94K/s | 15.92K/s | 15.95K/s | 15.96K/s |
+| LSET | 9.46K/s | 17.83K/s | 19.26K/s | 13.08K/s | 17.83K/s |
+| LTRIM | 3.09K/s | 2.92K/s | 3.18K/s | 2.51K/s | 2.92K/s |
+| RENAME | 4.62K/s | 5.38K/s | 5.80K/s | 4.46K/s | 5.38K/s |
+| ZCOUNT | 9.68K/s | 19.57K/s | 19.54K/s | 19.54K/s | 19.52K/s |
+| ZCARD(100) | 9.28K/s | 22.24K/s | 23.32K/s | 22.31K/s | 22.34K/s |
+| ZINCRBY | 9.19K/s | 15.59K/s | 16.58K/s | 11.82K/s | 15.42K/s |
+| ZREMRANGEBYRANK (pure) | 4.66K/s | 5.20K/s | 5.56K/s | 4.17K/s | 5.05K/s |
+| ZREMRANGEBYSCORE (pure) | 4.46K/s | 5.78K/s | 6.21K/s | 4.68K/s | 5.77K/s |
+| ZREMRANGEBYRANK (churn) | 2.34K/s | 1.42K/s | 1.51K/s | 1.31K/s | 1.42K/s |
+| ZREMRANGEBYSCORE (churn) | 2.32K/s | 1.51K/s | 1.61K/s | 1.38K/s | 1.51K/s |
+| SPOP | 9.41K/s | 13.06K/s | 13.90K/s | 10.15K/s | 13.01K/s |
+| SRANDMEMBER | 8.95K/s | 14.96K/s | 15.54K/s | 15.04K/s | 14.91K/s |
+| HINCRBY | 8.69K/s | 14.08K/s | 15.26K/s | 10.65K/s | 14.08K/s |
+| FT.SEARCH | 8.32K/s | 7.70K/s | 7.56K/s | 7.81K/s | 7.87K/s |
+
+In this run, the `default` template was faster than Redis in 33 of 37 suites. Redis remained faster for both churn-heavy sorted-set removal suites, `LTRIM`, and `FT.SEARCH`.
+
+**Memory after the same run:**
+
+Redis `used_memory` and Node.js `heapUsed` describe different allocators and should not be compared as equivalent measurements; RSS is included as the common process-level metric.
+
+| Process | Reported memory | RSS | RSS delta |
+|---|---:|---:|---:|
+| Redis | `used_memory` 7.16 MB | 26.42 MB | — |
+| RESPLite `default` | `heapUsed` 20.40 MB | 103.58 MB | +45.08 MB |
+| RESPLite `performance` | `heapUsed` 15.62 MB | 105.67 MB | +44.86 MB |
+| RESPLite `safety` | `heapUsed` 14.07 MB | 103.14 MB | +44.66 MB |
+| RESPLite `minimal` | `heapUsed` 15.87 MB | 104.30 MB | +45.81 MB |
+
+All four RESPLite variants finished with the application cache enabled and the same counters: 20 entries (3.57 KB), 199,999 hits, 30,006 misses, and an 86.95% hit ratio. The benchmark coordinator process finished at 11.29 MB heap used and 72.08 MB RSS; its heap delta was -11.08 MB.
+
+To reproduce the all-template benchmark, run `npm run benchmark`. Use `npm run benchmark -- --template default` to measure only the default template. Numbers depend on the host, process state, and whether Redis is native or in Docker; compare results from the same run rather than treating this snapshot as a universal performance guarantee.
 
 To compare the cache behavior under the same workload:
 
