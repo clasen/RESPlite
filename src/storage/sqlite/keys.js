@@ -55,7 +55,9 @@ export function createKeysStorage(db) {
     set(key, type, options = {}) {
       const now = options.updatedAt ?? Date.now();
       const expiresAt = options.expiresAt ?? null;
-      const existing = getByKey.get(key);
+      const existing = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
+        ? options.existingMeta
+        : getByKey.get(key);
       const setCount = type === KEY_TYPES.SET
         ? (options.setCount ?? existing?.setCount ?? 0)
         : null;

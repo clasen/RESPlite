@@ -6,6 +6,10 @@ import { createLRU } from './lru.js';
 
 export function createCache(opts = {}) {
   const enabled = opts.enabled !== false;
+  const limits = Object.freeze({
+    maxHashFields: opts.maxHashFields ?? 256,
+    maxHashBytes: opts.maxHashBytes ?? 256 * 1024,
+  });
   const lru = createLRU({
     maxEntries: opts.maxEntries ?? 50000,
     maxBytes: opts.maxBytes ?? 64 * 1024 * 1024,
@@ -26,6 +30,7 @@ export function createCache(opts = {}) {
       if (!enabled) return;
       lru.del(key);
     },
+    limits,
     get stats() {
       return { enabled, ...lru.stats };
     },

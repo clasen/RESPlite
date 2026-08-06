@@ -18,15 +18,17 @@ export function createStringsStorage(db, keys) {
   function _setOne(key, value, options) {
     const now = options.updatedAt ?? Date.now();
     const expiresAt = options.expiresAt ?? null;
-    const meta = keys.get(key);
+    const meta = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
+      ? options.existingMeta
+      : keys.get(key);
     if (meta) {
       if (meta.type !== KEY_TYPES.STRING) {
         throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value');
       }
-      keys.set(key, KEY_TYPES.STRING, { expiresAt, updatedAt: now });
+      keys.set(key, KEY_TYPES.STRING, { expiresAt, updatedAt: now, existingMeta: meta });
       updateStmt.run(value, key);
     } else {
-      keys.set(key, KEY_TYPES.STRING, { expiresAt, updatedAt: now });
+      keys.set(key, KEY_TYPES.STRING, { expiresAt, updatedAt: now, existingMeta: null });
       insertStmt.run(key, value);
     }
   }

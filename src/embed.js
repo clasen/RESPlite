@@ -12,6 +12,7 @@
 import net from 'node:net';
 import { handleConnection } from './server/connection.js';
 import { createEngine } from './engine/engine.js';
+import { createCache } from './cache/cache.js';
 import { openDb } from './storage/sqlite/db.js';
 import { compileCommandPolicy } from './commands/registry.js';
 
@@ -36,6 +37,7 @@ export { handleConnection, createEngine, openDb };
  * @param {number} [options.port=0]               Port to listen on (0 = OS-assigned).
  * @param {string} [options.pragmaTemplate='default'] PRAGMA preset (default|performance|safety|minimal|none). Convention: this template is applied by default; no config needed.
  * @param {Record<string, string|number>} [options.pragma] Override specific pragmas only when needed (e.g. { synchronous: 'FULL' }). Applied after the template.
+ * @param {false | {enabled?: boolean, maxEntries?: number, maxBytes?: number, maxHashFields?: number, maxHashBytes?: number}} [options.cache] Hot string/hash cache configuration, or false to disable it.
  * @param {RESPliteHooks} [options.hooks]         Optional event hooks for observability (onUnknownCommand, onCommandError, onSocketError).
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to call close(). Set false if you handle shutdown yourself to avoid double handlers.
  * @param {{ rename?: Record<string, string>, disabled?: string[] } | null} [options.commandPolicy] Optional: rename/disable commands for hardening.
@@ -47,13 +49,17 @@ export async function createRESPlite({
   port = 0,
   pragmaTemplate = 'default',
   pragma,
+  cache: cacheOptions,
   hooks = {},
   gracefulShutdown = true,
   commandPolicy = null,
 } = {}) {
   const compiledCommandPolicy = compileCommandPolicy(commandPolicy);
   const db = openDb(dbPath, { pragmaTemplate, pragma });
-  const engine = createEngine({ db });
+  const cache = cacheOptions === false
+    ? createCache({ enabled: false })
+    : createCache({ enabled: true, ...(cacheOptions ?? {}) });
+  const engine = createEngine({ db, cache });
   const connections = new Set();
 
   const server = net.createServer((socket) => {

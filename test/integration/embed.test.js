@@ -10,6 +10,12 @@ async function redisClient(port) {
   return client;
 }
 
+function infoObject(reply) {
+  return Object.fromEntries(
+    Array.from({ length: reply.length / 2 }, (_, i) => reply.slice(i * 2, i * 2 + 2))
+  );
+}
+
 describe('createRESPlite', () => {
   it('returns a numeric port and a close function', async () => {
     const srv = await createRESPlite();
@@ -28,6 +34,64 @@ describe('createRESPlite', () => {
 
     await client.quit();
     await srv.close();
+  });
+
+  it('enables the hot string cache by default and allows disabling it', async () => {
+    const srv = await createRESPlite();
+    const client = await redisClient(srv.port);
+    await client.set('hot', 'value');
+    assert.equal(await client.get('hot'), 'value');
+    const enabledInfo = await client.sendCommand(['CACHE.INFO']);
+    const enabled = infoObject(enabledInfo);
+    assert.equal(enabled.enabled, '1');
+    assert.equal(enabled.entries, '1');
+    assert.ok(Number(enabled.hits) >= 1);
+    await client.quit();
+    await srv.close();
+
+    const uncachedSrv = await createRESPlite({ cache: false });
+    const uncachedClient = await redisClient(uncachedSrv.port);
+    await uncachedClient.set('hot', 'value');
+    await uncachedClient.get('hot');
+    const disabledInfo = await uncachedClient.sendCommand(['CACHE.INFO']);
+    const disabled = infoObject(disabledInfo);
+    assert.equal(disabled.enabled, '0');
+    assert.equal(disabled.entries, '0');
+    await uncachedClient.quit();
+    await uncachedSrv.close();
+  });
+
+  it('warms, reuses and invalidates the hash cache through RESP commands', async () => {
+    const srv = await createRESPlite();
+    const client = await redisClient(srv.port);
+    try {
+      await client.hSet('profile', { name: 'Ada', role: 'engineer' });
+
+      const beforeWarm = infoObject(await client.sendCommand(['CACHE.INFO']));
+      assert.equal(beforeWarm.entries, '0');
+
+      assert.deepEqual(
+        { ...await client.hGetAll('profile') },
+        { name: 'Ada', role: 'engineer' }
+      );
+      const warmed = infoObject(await client.sendCommand(['CACHE.INFO']));
+      assert.equal(warmed.entries, '1');
+      assert.equal(warmed.misses, '1');
+
+      assert.equal(await client.hGet('profile', 'name'), 'Ada');
+      assert.deepEqual(await client.hmGet('profile', ['role', 'missing']), ['engineer', null]);
+      const reused = infoObject(await client.sendCommand(['CACHE.INFO']));
+      assert.equal(reused.hits, '2');
+
+      await client.hSet('profile', 'role', 'scientist');
+      const invalidated = infoObject(await client.sendCommand(['CACHE.INFO']));
+      assert.equal(invalidated.entries, '0');
+
+      assert.equal(await client.hGet('profile', 'role'), 'scientist');
+    } finally {
+      await client.quit();
+      await srv.close();
+    }
   });
 
   it('defaults to in-memory db when no db path given', async () => {

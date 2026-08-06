@@ -70,6 +70,15 @@ export function createHashesStorage(db, keys, options = {}) {
     return true;
   }
 
+  function getAllWithMeta(key) {
+    const now = clock();
+    const hasFieldTtl = !!hasAnyTtlStmt.get(key);
+    const values = hasFieldTtl
+      ? getAllLiveStmt.all(key, now).flat()
+      : getAllStmt.all(key).flat();
+    return { values, hasFieldTtl };
+  }
+
   return {
     get(key, field) {
       runInTransaction(db, () => {
@@ -80,16 +89,17 @@ export function createHashesStorage(db, keys, options = {}) {
     },
 
     getAll(key) {
-      const now = clock();
-      const hasTtl = hasAnyTtlStmt.get(key);
-      if (!hasTtl) return getAllStmt.all(key).flat();
-      return getAllLiveStmt.all(key, now).flat();
+      return getAllWithMeta(key).values;
     },
+
+    getAllWithMeta,
 
     set(key, field, value, options = {}) {
       runInTransaction(db, () => {
         const now = options.updatedAt ?? clock();
-        const meta = keys.get(key);
+        const meta = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
+          ? options.existingMeta
+          : keys.get(key);
         let knownCount = 0;
         if (meta) {
           if (meta.type !== KEY_TYPES.HASH) {
@@ -104,7 +114,7 @@ export function createHashesStorage(db, keys, options = {}) {
             knownCount = meta.hashCount;
           }
         } else {
-          keys.set(key, KEY_TYPES.HASH, { updatedAt: now, hashCount: 0 });
+          keys.set(key, KEY_TYPES.HASH, { updatedAt: now, hashCount: 0, existingMeta: null });
         }
         const existed = getStmt.get(key, field) != null;
         insertStmt.run(key, field, value);
@@ -122,7 +132,9 @@ export function createHashesStorage(db, keys, options = {}) {
     setMultiple(key, pairs, options = {}) {
       runInTransaction(db, () => {
         const now = options.updatedAt ?? clock();
-        const meta = keys.get(key);
+        const meta = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
+          ? options.existingMeta
+          : keys.get(key);
         let knownCount = 0;
         if (meta) {
           if (meta.type !== KEY_TYPES.HASH) {
@@ -137,7 +149,7 @@ export function createHashesStorage(db, keys, options = {}) {
             knownCount = meta.hashCount;
           }
         } else {
-          keys.set(key, KEY_TYPES.HASH, { updatedAt: now, hashCount: 0 });
+          keys.set(key, KEY_TYPES.HASH, { updatedAt: now, hashCount: 0, existingMeta: null });
         }
         let added = 0;
         for (let i = 0; i < pairs.length; i += 2) {
@@ -156,9 +168,11 @@ export function createHashesStorage(db, keys, options = {}) {
       });
     },
 
-    delete(key, fields) {
+    delete(key, fields, options = {}) {
       return runInTransaction(db, () => {
-        const meta = keys.get(key);
+        const meta = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
+          ? options.existingMeta
+          : keys.get(key);
         const before = meta && meta.hashCount != null ? meta.hashCount : null;
         let n = 0;
         for (const field of fields) {
@@ -177,8 +191,10 @@ export function createHashesStorage(db, keys, options = {}) {
       });
     },
 
-    count(key) {
-      const meta = keys.get(key);
+    count(key, options = {}) {
+      const meta = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
+        ? options.existingMeta
+        : keys.get(key);
       if (!meta || meta.type !== KEY_TYPES.HASH) {
         const row = countStmt.get(key);
         return row ? row.n : 0;
@@ -199,12 +215,14 @@ export function createHashesStorage(db, keys, options = {}) {
     incr(key, field, delta, options = {}) {
       return runInTransaction(db, () => {
         const now = options.updatedAt ?? clock();
-        const meta = keys.get(key);
+        const meta = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
+          ? options.existingMeta
+          : keys.get(key);
         if (meta && meta.type !== KEY_TYPES.HASH) {
           throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value');
         }
         if (!meta) {
-          keys.set(key, KEY_TYPES.HASH, { updatedAt: now, hashCount: 0 });
+          keys.set(key, KEY_TYPES.HASH, { updatedAt: now, hashCount: 0, existingMeta: null });
         } else {
           keys.bumpVersion(key);
           if (meta.hashCount == null) {

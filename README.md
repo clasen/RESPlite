@@ -62,6 +62,12 @@ const log = new LemonLog('RESPlite');
 const srv = await createRESPlite({
   port: 6380,
   db: './data.db',
+  cache: {
+    maxEntries: 50_000,
+    maxBytes: 64 * 1024 * 1024,
+    maxHashFields: 256,
+    maxHashBytes: 256 * 1024,
+  },
   commandPolicy: {
     rename: { KEYS: 'SAFE_KEYS' }, // original KEYS is blocked
     disabled: ['MONITOR'],         // blocked as unsupported
@@ -79,6 +85,8 @@ const srv = await createRESPlite({
   },
 });
 ```
+
+The hot string and small-hash cache is enabled by default with the limits shown above. SQLite remains the source of truth. Hashes with field TTLs or above either per-hash limit are not cached. Pass `cache: false` to disable it, or provide only the limits you want to override.
 
 Available hooks:
 
@@ -590,6 +598,26 @@ A typical comparison is **Redis (for example, in Docker)** on one side and **RES
 | FT.SEARCH         | 8.39K/s        | 8.81K/s            |
 
 To reproduce the benchmark, run `npm run benchmark -- --template default`. Numbers depend on host and whether Redis is native or in Docker.
+
+To compare the cache behavior under the same workload:
+
+```bash
+npm run benchmark -- --template default --compare-caches --cache-only
+```
+
+This starts three isolated RESPlite processes:
+
+| Variant | RESPlite cache | SQLite cache configuration |
+|---|---|---|
+| `cache-off` | Disabled | Selected PRAGMA template |
+| `cache-default` | 50k entries / 64 MiB | Selected PRAGMA template |
+| `cache-production` | 200k entries / 512 MiB | 1 GiB page cache / 2 GiB mmap |
+
+The report includes hot and uncached string/hash reads, uplift relative to `cache-off`, RSS per process, and `CACHE.INFO` counters. `--cache-only` limits execution to the cache-sensitive workloads; omit it to run the complete benchmark. Add `--resplite-only` when Redis is not available:
+
+```bash
+npm run benchmark -- --template default --compare-caches --cache-only --resplite-only
+```
 
 ## Compatibility matrix
 

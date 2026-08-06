@@ -47,12 +47,27 @@ export function createLRU(opts = {}) {
 
   function set(key, entry) {
     const size = estimateSize(entry.value);
-    while (map.size >= maxEntries || (totalBytes + size > maxBytes && map.size > 0)) {
-      evictOne();
+    const old = map.get(key);
+
+    // A value that cannot fit must not flush unrelated hot entries. If it
+    // replaces an existing key, remove the stale cached value first.
+    if (maxEntries <= 0 || maxBytes <= 0 || size > maxBytes) {
+      if (old) {
+        map.delete(key);
+        totalBytes -= estimateSize(old.value);
+      }
+      return;
     }
-    if (map.has(key)) {
-      const old = map.get(key);
+
+    // Remove replacements before enforcing limits so an update does not count
+    // as an additional entry and its old bytes do not trigger extra eviction.
+    if (old) {
+      map.delete(key);
       totalBytes -= estimateSize(old.value);
+    }
+
+    while (map.size >= maxEntries || totalBytes + size > maxBytes) {
+      evictOne();
     }
     map.set(key, entry);
     totalBytes += size;

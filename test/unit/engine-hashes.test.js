@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createEngine } from '../../src/engine/engine.js';
 import { openDb } from '../../src/storage/sqlite/db.js';
+import { createCache } from '../../src/cache/cache.js';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 describe('Engine hashes', () => {
@@ -54,6 +55,148 @@ describe('Engine hashes', () => {
   it('HLEN throws WRONGTYPE on non-hash key', () => {
     engine.set('hlen:str', 'value');
     assert.throws(() => engine.hlen('hlen:str'), /WRONGTYPE/);
+  });
+});
+
+describe('Engine hash cache', () => {
+  function cachedEngine({ now = 1_000, cacheOptions = {} } = {}) {
+    const db = openDb(tmpDbPath());
+    const cache = createCache({ enabled: true, ...cacheOptions });
+    let currentTime = now;
+    const engine = createEngine({ db, cache, clock: () => currentTime });
+    return {
+      db,
+      cache,
+      engine,
+      advance(ms) { currentTime += ms; },
+    };
+  }
+
+  it('reads HGETALL through once and returns private Buffer copies', () => {
+    const db = openDb(tmpDbPath());
+    const writer = createEngine({ db });
+    writer.hset('hash', 'field', 'value', 'other', 'second');
+
+    const cache = createCache({ enabled: true });
+    const engine = createEngine({ db, cache });
+    const first = engine.hgetall('hash');
+    assert.equal(cache.stats.misses, 1);
+    assert.equal(cache.stats.entries, 1);
+
+    first[1][0] = 'X'.charCodeAt(0);
+    const second = engine.hgetall('hash');
+    assert.equal(second[1].toString(), 'value');
+    assert.equal(cache.stats.hits, 1);
+    db.close();
+  });
+
+  it('serves HGET, HMGET, HLEN, HKEYS, HVALS and HEXISTS from a complete hash entry', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.hset('hash', 'a', '1', 'b', '2', 'c', '3');
+    engine.hgetall('hash');
+
+    assert.equal(engine.hget('hash', 'b').toString(), '2');
+    assert.deepEqual(
+      engine.hmget('hash', ['a', 'missing']).map((v) => v?.toString() ?? null),
+      ['1', null]
+    );
+    assert.equal(engine.hlen('hash'), 3);
+    assert.deepEqual(engine.hkeys('hash').map((v) => v.toString()), ['a', 'b', 'c']);
+    assert.deepEqual(engine.hvals('hash').map((v) => v.toString()), ['1', '2', '3']);
+    assert.equal(engine.hexists('hash', 'c'), 1);
+    assert.equal(engine.hexists('hash', 'missing'), 0);
+    assert.equal(cache.stats.misses, 1);
+    assert.equal(cache.stats.hits, 7);
+    db.close();
+  });
+
+  it('invalidates complete hashes after HSET, HDEL and HINCRBY', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.hset('hash', 'a', '1', 'b', '2');
+    engine.hgetall('hash');
+    assert.equal(cache.stats.entries, 1);
+
+    engine.hset('hash', 'a', '10');
+    assert.equal(cache.stats.entries, 0);
+    assert.equal(engine.hgetall('hash')[1].toString(), '10');
+
+    engine.hdel('hash', ['b']);
+    assert.equal(cache.stats.entries, 0);
+    assert.equal(engine.hlen('hash'), 1);
+
+    assert.equal(engine.hincrby('hash', 'a', 5), 15);
+    assert.equal(cache.stats.entries, 0);
+    assert.equal(engine.hget('hash', 'a').toString(), '15');
+    db.close();
+  });
+
+  it('does not cache hashes with field TTLs and can cache after HPERSIST', () => {
+    const { db, cache, engine, advance } = cachedEngine();
+    engine.hset('hash', 'expiring', '1', 'stable', '2');
+    engine.hgetall('hash');
+    assert.equal(cache.stats.entries, 1);
+
+    assert.deepEqual(engine.hexpire('hash', 2_000, ['expiring']), [1]);
+    assert.equal(cache.stats.entries, 0);
+    engine.hgetall('hash');
+    assert.equal(cache.stats.entries, 0);
+
+    advance(1_001);
+    assert.deepEqual(
+      engine.hgetall('hash').map((v) => v.toString()),
+      ['stable', '2']
+    );
+    assert.equal(cache.stats.entries, 0);
+    assert.equal(engine.hget('hash', 'expiring'), null); // lazily removes its expired TTL row
+
+    assert.deepEqual(engine.hexpire('hash', 4_000, ['stable']), [1]);
+    assert.deepEqual(engine.hpersist('hash', ['stable']), [1]);
+    engine.hgetall('hash');
+    assert.equal(cache.stats.entries, 1);
+    db.close();
+  });
+
+  it('does not cache hashes above the configured field limit', () => {
+    const { db, cache, engine } = cachedEngine({ cacheOptions: { maxHashFields: 1 } });
+    engine.hset('hash', 'a', '1', 'b', '2');
+    assert.equal(engine.hgetall('hash').length, 4);
+    assert.equal(cache.stats.entries, 0);
+    db.close();
+  });
+
+  it('does not cache hashes above the configured byte limit', () => {
+    const { db, cache, engine } = cachedEngine({ cacheOptions: { maxHashBytes: 4 } });
+    engine.hset('hash', 'field', 'value');
+
+    assert.deepEqual(
+      engine.hgetall('hash').map((v) => v.toString()),
+      ['field', 'value']
+    );
+    assert.equal(cache.stats.misses, 1);
+    assert.equal(cache.stats.entries, 0);
+
+    // It remains uncached on subsequent reads instead of silently exceeding
+    // the configured memory budget.
+    engine.hgetall('hash');
+    assert.equal(cache.stats.misses, 2);
+    assert.equal(cache.stats.entries, 0);
+    db.close();
+  });
+
+  it('respects key-level expiration on cached hashes', () => {
+    const { db, cache, engine, advance } = cachedEngine();
+    engine.hset('hash', 'field', 'value');
+    engine.hgetall('hash');
+    assert.equal(cache.stats.entries, 1);
+
+    assert.equal(engine.pexpire('hash', 100), true);
+    assert.equal(cache.stats.entries, 0);
+    assert.equal(engine.hgetall('hash').length, 2);
+    advance(101);
+    assert.deepEqual(engine.hgetall('hash'), []);
+    assert.equal(cache.stats.entries, 0);
+    assert.equal(engine.type('hash'), 'none');
+    db.close();
   });
 });
 

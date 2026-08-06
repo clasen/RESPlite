@@ -24,15 +24,104 @@ export function createEngine(opts = {}) {
   const lists = createListsStorage(db, keys);
   const zsets = createZsetsStorage(db, keys);
 
+  const CACHE_MISS = Symbol('cache-miss');
+
+  function cacheKey(key) {
+    return key.toString('base64');
+  }
+
+  function invalidateCachedKey(key) {
+    cache?.invalidate(cacheKey(key));
+  }
+
+  function cacheString(key, value, meta = {}) {
+    if (!cache || value == null) return;
+    // Keep the cached copy private: engine callers receive mutable Buffers.
+    cache.set(
+      cacheKey(key),
+      'string',
+      Buffer.from(value),
+      meta.version ?? 0,
+      meta.expiresAt ?? null
+    );
+  }
+
+  function readCachedString(key) {
+    if (!cache) return CACHE_MISS;
+    const entry = cache.get(cacheKey(key));
+    if (!entry || entry.kind !== 'string') return CACHE_MISS;
+    if (entry.expiresAt != null && entry.expiresAt <= clock()) {
+      invalidateCachedKey(key);
+      keys.delete(key);
+      return null;
+    }
+    return Buffer.from(entry.value);
+  }
+
+  function cacheHash(key, flat, meta) {
+    if (!cache) return;
+    const fieldCount = flat.length / 2;
+    const maxFields = cache.limits?.maxHashFields ?? 256;
+    const maxBytes = cache.limits?.maxHashBytes ?? 256 * 1024;
+    let bytes = 0;
+    for (const item of flat) bytes += item.length;
+    if (fieldCount > maxFields || bytes > maxBytes) {
+      invalidateCachedKey(key);
+      return;
+    }
+
+    const fields = new Map();
+    for (let i = 0; i < flat.length; i += 2) {
+      const field = Buffer.from(flat[i]);
+      const value = Buffer.from(flat[i + 1]);
+      fields.set(cacheKey(field), [field, value]);
+    }
+    cache.set(cacheKey(key), 'hash', fields, meta.version, meta.expiresAt);
+  }
+
+  function readCachedHash(key) {
+    if (!cache) return CACHE_MISS;
+    const entry = cache.get(cacheKey(key));
+    if (!entry || entry.kind !== 'hash') return CACHE_MISS;
+    if (entry.expiresAt != null && entry.expiresAt <= clock()) {
+      invalidateCachedKey(key);
+      keys.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  function copyCachedHashFlat(fields) {
+    const flat = [];
+    for (const [field, value] of fields.values()) {
+      flat.push(Buffer.from(field), Buffer.from(value));
+    }
+    return flat;
+  }
+
+  function readCachedHashField(fields, field) {
+    const pair = fields.get(cacheKey(field));
+    return pair ? Buffer.from(pair[1]) : null;
+  }
+
+  function versionAfterWrite(meta) {
+    return meta ? meta.version + 1 : 1;
+  }
+
   function _incrBy(key, delta) {
     const k = asKey(key);
-    const meta = getKeyMeta(key);
+    const cached = readCachedString(k);
+    const meta = getKeyMeta(k);
     if (meta) expectString(meta);
-    const cur = strings.get(k);
+    const cur = meta
+      ? (cached !== CACHE_MISS ? cached : strings.get(k))
+      : null;
     const num = cur == null ? 0 : parseInt(cur.toString('utf8'), 10);
     if (Number.isNaN(num)) throw new Error('ERR value is not an integer or out of range');
     const next = num + delta;
-    strings.set(k, Buffer.from(String(next), 'utf8'));
+    const value = Buffer.from(String(next), 'utf8');
+    strings.set(k, value, { existingMeta: meta });
+    cacheString(k, value, { version: versionAfterWrite(meta), expiresAt: null });
     return next;
   }
 
@@ -41,57 +130,71 @@ export function createEngine(opts = {}) {
     const meta = keys.get(k);
     if (meta && meta.expiresAt != null && meta.expiresAt <= clock()) {
       keys.delete(k);
+      invalidateCachedKey(k);
       return null;
     }
     return meta;
   }
 
+  function readString(key, { wrongTypeAsNull = false } = {}) {
+    const k = asKey(key);
+    const cached = readCachedString(k);
+    if (cached !== CACHE_MISS) return cached;
+
+    const meta = getKeyMeta(k);
+    if (!meta) return null;
+    if (wrongTypeAsNull && meta.type !== KEY_TYPES.STRING) return null;
+    expectString(meta);
+
+    const value = strings.get(k);
+    cacheString(k, value, meta);
+    return value;
+  }
+
   const engine = {
     get(key) {
-      const k = asKey(key);
-      const meta = getKeyMeta(key);
-      if (!meta) return null;
-      expectString(meta);
-      return strings.get(k);
+      return readString(key);
     },
 
     strlen(key) {
-      const k = asKey(key);
-      const meta = getKeyMeta(key);
-      if (!meta) return 0;
-      expectString(meta);
-      const v = strings.get(k);
+      const v = readString(key);
       return v ? v.length : 0;
     },
 
     set(key, value, options = {}) {
       const k = asKey(key);
-      getKeyMeta(key); // lazy-expire if needed
+      const existingMeta = getKeyMeta(k); // lazy-expire if needed
       const v = asValue(value);
       let expiresAt = options.expiresAt ?? null;
       if (options.ex != null) expiresAt = clock() + options.ex * 1000;
       if (options.px != null) expiresAt = clock() + options.px;
-      strings.set(k, v, { expiresAt });
+      strings.set(k, v, { expiresAt, existingMeta });
+      cacheString(k, v, { version: versionAfterWrite(existingMeta), expiresAt });
     },
 
     mset(pairs) {
       const entries = [];
       for (let i = 0; i < pairs.length; i += 2) {
         const k = asKey(pairs[i]);
-        getKeyMeta(pairs[i]);
-        entries.push({ key: k, value: asValue(pairs[i + 1]) });
+        const existingMeta = getKeyMeta(k);
+        entries.push({
+          key: k,
+          value: asValue(pairs[i + 1]),
+          options: { existingMeta },
+        });
       }
       strings.setMultiple(entries);
+      for (const entry of entries) {
+        const { existingMeta } = entry.options;
+        cacheString(entry.key, entry.value, {
+          version: versionAfterWrite(existingMeta),
+          expiresAt: null,
+        });
+      }
     },
 
     mget(keysList) {
-      return keysList.map((key) => {
-        const k = asKey(key);
-        const meta = getKeyMeta(key);
-        if (!meta) return null;
-        if (meta.type !== KEY_TYPES.STRING) return null;
-        return strings.get(k);
-      });
+      return keysList.map((key) => readString(key, { wrongTypeAsNull: true }));
     },
 
     del(keysToDelete) {
@@ -102,6 +205,7 @@ export function createEngine(opts = {}) {
           keys.delete(k);
           n++;
         }
+        invalidateCachedKey(k);
       }
       return n;
     },
@@ -120,6 +224,7 @@ export function createEngine(opts = {}) {
       if (!meta) return false;
       const expiresAt = clock() + seconds * 1000;
       keys.setExpires(k, expiresAt);
+      invalidateCachedKey(k);
       return true;
     },
 
@@ -129,6 +234,7 @@ export function createEngine(opts = {}) {
       if (!meta) return false;
       const expiresAt = clock() + milliseconds;
       keys.setExpires(k, expiresAt);
+      invalidateCachedKey(k);
       return true;
     },
 
@@ -155,6 +261,7 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return false;
       keys.setExpires(k, null);
+      invalidateCachedKey(k);
       return true;
     },
 
@@ -176,38 +283,52 @@ export function createEngine(opts = {}) {
 
     hset(key, ...pairs) {
       const k = asKey(key);
-      getKeyMeta(key);
+      const existingMeta = getKeyMeta(k);
       const keyValuePairs = pairs.map((p) => (Buffer.isBuffer(p) ? p : asValue(p)));
       if (keyValuePairs.length === 2) {
-        hashes.set(k, keyValuePairs[0], keyValuePairs[1]);
+        hashes.set(k, keyValuePairs[0], keyValuePairs[1], { existingMeta });
       } else {
-        hashes.setMultiple(k, keyValuePairs);
+        hashes.setMultiple(k, keyValuePairs, { existingMeta });
       }
+      invalidateCachedKey(k);
       return Math.floor(pairs.length / 2);
     },
 
     hget(key, field) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const f = asKey(field);
+      const cached = readCachedHash(k);
+      if (cached !== CACHE_MISS) return cached ? readCachedHashField(cached, f) : null;
+      const meta = getKeyMeta(k);
       if (!meta) return null;
       expectHash(meta);
-      return hashes.get(k, asKey(field));
+      return hashes.get(k, f);
     },
 
     hmget(key, fields) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const fieldBuffers = fields.map((f) => asKey(f));
+      const cached = readCachedHash(k);
+      if (cached !== CACHE_MISS) {
+        if (!cached) return fields.map(() => null);
+        return fieldBuffers.map((f) => readCachedHashField(cached, f));
+      }
+      const meta = getKeyMeta(k);
       if (!meta) return fields.map(() => null);
       expectHash(meta);
-      return fields.map((f) => hashes.get(k, asKey(f)));
+      return fieldBuffers.map((f) => hashes.get(k, f));
     },
 
     hgetall(key) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedHash(k);
+      if (cached !== CACHE_MISS) return cached ? copyCachedHashFlat(cached) : [];
+      const meta = getKeyMeta(k);
       if (!meta) return [];
       expectHash(meta);
-      return hashes.getAll(k);
+      const { values, hasFieldTtl } = hashes.getAllWithMeta(k);
+      if (!hasFieldTtl) cacheHash(k, values, meta);
+      return values;
     },
 
     hkeys(key) {
@@ -226,18 +347,22 @@ export function createEngine(opts = {}) {
 
     hdel(key, fields) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const meta = getKeyMeta(k);
       if (!meta) return 0;
       expectHash(meta);
-      return hashes.delete(k, fields.map((f) => asKey(f)));
+      const deleted = hashes.delete(k, fields.map((f) => asKey(f)), { existingMeta: meta });
+      invalidateCachedKey(k);
+      return deleted;
     },
 
     hlen(key) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedHash(k);
+      if (cached !== CACHE_MISS) return cached ? cached.size : 0;
+      const meta = getKeyMeta(k);
       if (!meta) return 0;
       expectHash(meta);
-      return hashes.count(k);
+      return hashes.count(k, { existingMeta: meta });
     },
 
     hexists(key, field) {
@@ -247,10 +372,12 @@ export function createEngine(opts = {}) {
 
     hincrby(key, field, amount) {
       const k = asKey(key);
-      getKeyMeta(key);
+      const existingMeta = getKeyMeta(k);
       const amt = parseInt(Buffer.isBuffer(amount) ? amount.toString() : String(amount), 10);
       if (Number.isNaN(amt)) throw new Error('ERR value is not an integer or out of range');
-      return hashes.incr(k, asKey(field), amt);
+      const next = hashes.incr(k, asKey(field), amt, { existingMeta });
+      invalidateCachedKey(k);
+      return next;
     },
 
     /**
@@ -262,7 +389,11 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return fields.map(() => -2);
       expectHash(meta);
-      return fields.map((f) => hashes.setFieldExpire(k, asKey(f), expiresAtMs, { condition }));
+      try {
+        return fields.map((f) => hashes.setFieldExpire(k, asKey(f), expiresAtMs, { condition }));
+      } finally {
+        invalidateCachedKey(k);
+      }
     },
 
     /**
@@ -273,11 +404,15 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return fields.map(() => -2);
       expectHash(meta);
-      return fields.map((f) => {
-        const ms = hashes.getFieldTtl(k, asKey(f));
-        if (ms < 0) return ms;
-        return Math.floor(ms / 1000);
-      });
+      try {
+        return fields.map((f) => {
+          const ms = hashes.getFieldTtl(k, asKey(f));
+          if (ms < 0) return ms;
+          return Math.floor(ms / 1000);
+        });
+      } finally {
+        invalidateCachedKey(k);
+      }
     },
 
     /**
@@ -288,7 +423,11 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return fields.map(() => -2);
       expectHash(meta);
-      return fields.map((f) => hashes.persistField(k, asKey(f)));
+      try {
+        return fields.map((f) => hashes.persistField(k, asKey(f)));
+      } finally {
+        invalidateCachedKey(k);
+      }
     },
 
     sadd(key, ...members) {
@@ -609,6 +748,7 @@ export function createEngine(opts = {}) {
           setCount: meta.type === KEY_TYPES.SET ? meta.setCount : undefined,
           hashCount: meta.type === KEY_TYPES.HASH ? meta.hashCount : undefined,
           zsetCount: meta.type === KEY_TYPES.ZSET ? meta.zsetCount : undefined,
+          existingMeta: null,
         });
         switch (meta.type) {
           case KEY_TYPES.STRING:
@@ -631,6 +771,8 @@ export function createEngine(opts = {}) {
         }
         keys.delete(k);
       });
+      invalidateCachedKey(k);
+      invalidateCachedKey(nk);
     },
 
     // Expose for storage/commands that need direct access

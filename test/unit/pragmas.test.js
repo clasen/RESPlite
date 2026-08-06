@@ -96,4 +96,45 @@ describe('Pragma templates', () => {
       db.close();
     }
   });
+
+  it('applies positive mmap_size in bytes', () => {
+    const path = tmpDbPath();
+    const requestedBytes = 256 * 1024 * 1024;
+    const db = openDb(path, {
+      pragmaTemplate: 'default',
+      pragma: { mmap_size: requestedBytes },
+    });
+    try {
+      const row = db.prepare('PRAGMA mmap_size').get();
+      const maxOption = db.prepare('SELECT sqlite_compileoption_used(?) AS enabled').get(
+        'MAX_MMAP_SIZE=0'
+      );
+      if (maxOption.enabled) {
+        assert.equal(row.mmap_size, 0);
+      } else {
+        assert.equal(row.mmap_size, requestedBytes);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not interpret a negative mmap_size as KiB', () => {
+    const path = tmpDbPath();
+    const misleadingOneGibKib = -(1024 * 1024);
+    const db = openDb(path, {
+      pragmaTemplate: 'default',
+      pragma: { mmap_size: misleadingOneGibKib },
+    });
+    try {
+      const row = db.prepare('PRAGMA mmap_size').get();
+      const defaultIsZero = db.prepare('SELECT sqlite_compileoption_used(?) AS enabled').get(
+        'DEFAULT_MMAP_SIZE=0'
+      );
+      if (defaultIsZero.enabled) assert.equal(row.mmap_size, 0);
+      assert.notEqual(row.mmap_size, 1024 * 1024 * 1024);
+    } finally {
+      db.close();
+    }
+  });
 });

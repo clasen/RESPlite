@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Comparative benchmark: Redis (local) vs RESPlite (all or one PRAGMA template).
+ * Comparative benchmark: Redis (local) vs RESPlite (all or one PRAGMA template),
+ * with an optional comparison of application/SQLite cache profiles.
  *
  * Prerequisites:
  *   - Redis running on port 6379 (default)
@@ -10,6 +11,7 @@
  *
  * Usage:
  *   node scripts/benchmark-redis-vs-resplite.js [--iterations N] [--redis-port P] [--resplite-port P] [--template NAME]
+ *   node scripts/benchmark-redis-vs-resplite.js --template default --compare-caches [--cache-only] [--resplite-only]
  */
 
 import { createClient } from 'redis';
@@ -27,6 +29,9 @@ const DEFAULTS = {
   redisPort: 6379,
   resplitePort: 6380,
   template: null, // null = all templates (except none); or 'default' | 'performance' | 'safety' | 'minimal'
+  compareCaches: false,
+  cacheOnly: false,
+  respliteOnly: false,
 };
 
 const VALID_TEMPLATES = ['default', 'performance', 'safety', 'minimal'];
@@ -48,9 +53,59 @@ function parseArgs() {
         process.exit(1);
       }
       out.template = name;
+    } else if (args[i] === '--compare-caches') {
+      out.compareCaches = true;
+    } else if (args[i] === '--cache-only') {
+      out.cacheOnly = true;
+    } else if (args[i] === '--resplite-only') {
+      out.respliteOnly = true;
     }
   }
   return out;
+}
+
+const CACHE_PROFILES = Object.freeze([
+  {
+    name: 'cache-off',
+    description: 'RESPlite cache disabled; SQLite template unchanged',
+    cache: false,
+  },
+  {
+    name: 'cache-default',
+    description: '50k entries, 64 MiB; hash limit 256 fields / 256 KiB',
+    cache: {},
+  },
+  {
+    name: 'cache-production',
+    description: '200k entries, 512 MiB; SQLite page cache 1 GiB + mmap 2 GiB',
+    cache: {
+      maxEntries: 200_000,
+      maxBytes: 512 * 1024 * 1024,
+      maxHashFields: 256,
+      maxHashBytes: 256 * 1024,
+    },
+    pragma: {
+      cache_size: -(1024 * 1024),
+      mmap_size: 2 * 1024 * 1024 * 1024,
+    },
+  },
+]);
+
+function buildVariants({ template, compareCaches }) {
+  if (compareCaches) {
+    const templateName = template ?? 'default';
+    return CACHE_PROFILES.map((profile) => ({ ...profile, templateName }));
+  }
+
+  const templateNames = template
+    ? [template]
+    : getPragmaTemplateNames().filter((name) => name !== 'none');
+  return templateNames.map((templateName) => ({
+    name: templateName,
+    description: `PRAGMA template ${templateName}; default RESPlite cache`,
+    templateName,
+    cache: {},
+  }));
 }
 
 async function connect(name, port) {
@@ -82,14 +137,19 @@ async function waitForPort(port, maxMs = 10000) {
   return false;
 }
 
-/** Spawn RESPlite with given PRAGMA template; returns child process. */
-function spawnResplite(templateName, port, dbPath) {
-  const child = spawn(process.execPath, ['src/index.js'], {
+/** Spawn one isolated RESPlite benchmark variant; returns child process. */
+function spawnResplite(variant, port, dbPath) {
+  const config = {
+    port,
+    dbPath,
+    pragmaTemplate: variant.templateName,
+    cache: variant.cache,
+    ...(variant.pragma ? { pragma: variant.pragma } : {}),
+  };
+  const child = spawn(process.execPath, ['scripts/benchmark-resplite-instance.js'], {
     env: {
       ...process.env,
-      RESPLITE_PORT: String(port),
-      RESPLITE_DB: dbPath,
-      RESPLITE_PRAGMA_TEMPLATE: templateName,
+      RESPLITE_BENCH_CONFIG: JSON.stringify(config),
     },
     cwd: PROJECT_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -168,6 +228,28 @@ async function getRespliteMemory(client) {
   }
 }
 
+/** Get RESPlite application-cache counters via CACHE.INFO. */
+async function getRespliteCache(client) {
+  try {
+    const raw = await client.sendCommand(['CACHE.INFO']);
+    const list = Array.isArray(raw) ? raw : [];
+    const out = {};
+    for (let i = 0; i + 1 < list.length; i += 2) {
+      out[String(list[i])] = String(list[i + 1]);
+    }
+    return {
+      enabled: out.enabled === '1',
+      entries: Number(out.entries) || 0,
+      bytes: Number(out.bytes) || 0,
+      hits: Number(out.hits) || 0,
+      misses: Number(out.misses) || 0,
+      hitRatio: Number(out.hit_ratio) || 0,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function runBench(name, client, iterations, fn) {
   const start = performance.now();
   await fn(client, iterations);
@@ -186,6 +268,13 @@ async function benchSetGet(client, n) {
     await client.set(key, `value-${i}`);
     await client.get(key);
   }
+}
+
+async function benchGetHot(client, n) {
+  const key = 'bm:str:hot';
+  await client.set(key, 'hot-value');
+  await client.get(key); // warm/read once before timing
+  for (let i = 0; i < n; i++) await client.get(key);
 }
 
 async function benchMsetMget(client, n) {
@@ -211,10 +300,39 @@ async function benchHsetHget(client, n) {
   }
 }
 
+async function benchHgetUncached(client, n) {
+  const key = 'bm:hash:hget:uncached';
+  await client.del(key);
+  await client.hSet(key, 'field', 'value');
+  // HGET intentionally does not populate the complete-hash cache.
+  for (let i = 0; i < n; i++) await client.hGet(key, 'field');
+}
+
+async function benchHgetHot(client, n) {
+  const key = 'bm:hash:hget:hot';
+  await client.del(key);
+  await client.hSet(key, { field: 'value', second: 'another-value' });
+  await client.hGetAll(key); // complete-hash cache warm-up
+  for (let i = 0; i < n; i++) await client.hGet(key, 'field');
+}
+
+async function benchHmgetHot(client, n) {
+  const key = 'bm:hash:hmget:hot';
+  await client.del(key);
+  await client.hSet(
+    key,
+    Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`f${i}`, `v${i}`]))
+  );
+  await client.hGetAll(key); // complete-hash cache warm-up
+  const fields = Array.from({ length: 10 }, (_, i) => `f${i}`);
+  for (let i = 0; i < n; i++) await client.hmGet(key, fields);
+}
+
 async function benchHgetall(client, n) {
   const key = 'bm:hash:big';
   await client.del(key);
   await client.hSet(key, Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`f${i}`, `v${i}`])));
+  await client.hGetAll(key); // keep the timed section strictly hot
   for (let i = 0; i < n; i++) await client.hGetAll(key);
 }
 
@@ -222,6 +340,14 @@ async function benchHlen(client, n) {
   const key = 'bm:hash:hlen';
   await client.del(key);
   await client.hSet(key, Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`f${i}`, `v${i}`])));
+  for (let i = 0; i < n; i++) await client.hLen(key);
+}
+
+async function benchHlenHot(client, n) {
+  const key = 'bm:hash:hlen:hot';
+  await client.del(key);
+  await client.hSet(key, Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`f${i}`, `v${i}`])));
+  await client.hGetAll(key); // complete-hash cache warm-up
   for (let i = 0; i < n; i++) await client.hLen(key);
 }
 
@@ -469,12 +595,17 @@ async function benchFtSearch(client, n) {
 
 const SUITES = [
   { name: 'PING', fn: benchPing, iterScale: 1 },
-  { name: 'SET+GET', fn: benchSetGet, iterScale: 1 },
-  { name: 'MSET+MGET(10)', fn: benchMsetMget, iterScale: 1 },
+  { name: 'SET+GET', fn: benchSetGet, iterScale: 1, cacheFocus: true },
+  { name: 'GET (hot)', fn: benchGetHot, iterScale: 1, cacheFocus: true },
+  { name: 'MSET+MGET(10)', fn: benchMsetMget, iterScale: 1, cacheFocus: true },
   { name: 'INCR', fn: benchIncr, iterScale: 1 },
-  { name: 'HSET+HGET', fn: benchHsetHget, iterScale: 1 },
-  { name: 'HGETALL(50)', fn: benchHgetall, iterScale: 1 },
-  { name: 'HLEN(50)', fn: benchHlen, iterScale: 1 },
+  { name: 'HSET+HGET', fn: benchHsetHget, iterScale: 1, cacheFocus: true },
+  { name: 'HGET (uncached)', fn: benchHgetUncached, iterScale: 1, cacheFocus: true },
+  { name: 'HGET (hot)', fn: benchHgetHot, iterScale: 1, cacheFocus: true },
+  { name: 'HMGET(10) (hot)', fn: benchHmgetHot, iterScale: 1, cacheFocus: true },
+  { name: 'HGETALL(50)', fn: benchHgetall, iterScale: 1, cacheFocus: true },
+  { name: 'HLEN(50) (uncached)', fn: benchHlen, iterScale: 1, cacheFocus: true },
+  { name: 'HLEN(50) (hot)', fn: benchHlenHot, iterScale: 1, cacheFocus: true },
   { name: 'SADD+SMEMBERS', fn: benchSaddSmembers, iterScale: 1 },
   { name: 'LPUSH+LRANGE', fn: benchLpushLrange, iterScale: 1 },
   { name: 'LREM', fn: benchLrem, iterScale: 1 },
@@ -483,9 +614,9 @@ const SUITES = [
   { name: 'ZRANK+ZREVRANK', fn: benchZrankZrevrank, iterScale: 1 },
   { name: 'ZREVRANGEBYSCORE', fn: benchZrevrangebyscore, iterScale: 1 },
   { name: 'SET+DEL', fn: benchDel, iterScale: 1 },
-  { name: 'STRLEN', fn: benchStrlen, iterScale: 1 },
-  { name: 'HKEYS(50)', fn: benchHkeys, iterScale: 1 },
-  { name: 'HVALS(50)', fn: benchHvals, iterScale: 1 },
+  { name: 'STRLEN', fn: benchStrlen, iterScale: 1, cacheFocus: true },
+  { name: 'HKEYS(50)', fn: benchHkeys, iterScale: 1, cacheFocus: true },
+  { name: 'HVALS(50)', fn: benchHvals, iterScale: 1, cacheFocus: true },
   { name: 'LSET', fn: benchLset, iterScale: 1 },
   { name: 'LTRIM', fn: benchLtrim, iterScale: 1 },
   { name: 'RENAME', fn: benchRename, iterScale: 1 },
@@ -504,10 +635,12 @@ const SUITES = [
 
 async function runSuite(redis, respliteClients, suite, iterations) {
   const n = Math.max(1, Math.floor(iterations * (suite.iterScale ?? 1)));
-  const redisResult = await runBench('Redis', redis, n, suite.fn).catch((e) => ({
-    name: 'Redis',
-    error: e?.message || String(e),
-  }));
+  const redisResult = redis
+    ? await runBench('Redis', redis, n, suite.fn).catch((e) => ({
+      name: 'Redis',
+      error: e?.message || String(e),
+    }))
+    : null;
   const templateResults = {};
   await Promise.all(
     respliteClients.map(async ({ name, client }) => {
@@ -522,29 +655,38 @@ async function runSuite(redis, respliteClients, suite, iterations) {
 }
 
 async function main() {
-  const { iterations, redisPort, resplitePort, template } = parseArgs();
-  const templateNames = template
-    ? [template]
-    : getPragmaTemplateNames().filter((t) => t !== 'none');
+  const options = parseArgs();
+  const { iterations, redisPort, resplitePort, template, compareCaches, cacheOnly, respliteOnly } = options;
+  const variants = buildVariants(options);
+  const variantNames = variants.map((variant) => variant.name);
+  const suites = cacheOnly ? SUITES.filter((suite) => suite.cacheFocus) : SUITES;
 
   const benchTmpDir = path.join(PROJECT_ROOT, 'tmp', 'bench');
   fs.mkdirSync(benchTmpDir, { recursive: true });
 
-  console.log(template ? `Benchmark: Redis vs RESPlite (template: ${template})` : 'Benchmark: Redis vs RESPlite (all PRAGMA templates)');
-  console.log(`  Redis:    127.0.0.1:${redisPort}`);
-  console.log(`  RESPlite: ${templateNames.length} process(es) on port(s) ${resplitePort}${templateNames.length > 1 ? `..${resplitePort + templateNames.length - 1}` : ''}`);
-  console.log(`  Templates: ${templateNames.join(', ')}`);
+  const title = compareCaches
+    ? `RESPlite cache comparison (PRAGMA template: ${template ?? 'default'})`
+    : (template ? `Redis vs RESPlite (template: ${template})` : 'Redis vs RESPlite (all PRAGMA templates)');
+  console.log(`Benchmark: ${title}`);
+  console.log(`  Redis:    ${respliteOnly ? 'skipped (--resplite-only)' : `127.0.0.1:${redisPort}`}`);
+  console.log(`  RESPlite: ${variants.length} process(es) on port(s) ${resplitePort}${variants.length > 1 ? `..${resplitePort + variants.length - 1}` : ''}`);
+  console.log('  Variants:');
+  for (const variant of variants) {
+    console.log(`    ${variant.name}: ${variant.description}`);
+  }
   console.log(`  Iterations per suite: ${iterations}`);
+  if (cacheOnly) console.log(`  Suites: cache-focused only (${suites.length})`);
   console.log('');
 
   const children = [];
-  for (let i = 0; i < templateNames.length; i++) {
-    const name = templateNames[i];
+  for (let i = 0; i < variants.length; i++) {
+    const variant = variants[i];
+    const name = variant.name;
     const port = resplitePort + i;
     const dbPath = path.join(benchTmpDir, `bench-${name}.db`);
-    const child = spawnResplite(name, port, dbPath);
+    const child = spawnResplite(variant, port, dbPath);
     child.on('error', (err) => console.error(`RESPlite(${name}) spawn error:`, err.message));
-    children.push({ name, port, child });
+    children.push({ name, port, child, variant });
   }
 
   console.log('  Waiting for RESPlite instances to start...');
@@ -557,16 +699,18 @@ async function main() {
     }
   }
 
-  const redis = await connect('Redis', redisPort);
+  const redis = respliteOnly ? null : await connect('Redis', redisPort);
   const respliteClients = await Promise.all(
     children.map(async ({ name, port }) => ({ name, client: await connect(`RESPlite(${name})`, port) }))
   );
 
   const prefix = 'bm:';
-  try {
-    const redisKeys = await redis.keys(prefix + '*');
-    if (redisKeys.length) await redis.del(redisKeys);
-  } catch (_) {}
+  if (redis) {
+    try {
+      const redisKeys = await redis.keys(prefix + '*');
+      if (redisKeys.length) await redis.del(redisKeys);
+    } catch (_) {}
+  }
   for (const { client } of respliteClients) {
     try {
       const keys = await client.keys(prefix + '*');
@@ -576,21 +720,25 @@ async function main() {
 
   const memBefore = {
     process: process.memoryUsage(),
-    redis: await getRedisMemory(redis),
-    resplite: await getRespliteMemory(respliteClients[0]?.client),
+    redis: redis ? await getRedisMemory(redis) : null,
+    resplite: Object.fromEntries(await Promise.all(
+      respliteClients.map(async ({ name, client }) => [name, await getRespliteMemory(client)])
+    )),
   };
 
   const results = [];
-  for (const suite of SUITES) {
+  for (const suite of suites) {
     process.stdout.write(`  ${suite.name} ... `);
     try {
       const row = await runSuite(redis, respliteClients, suite, iterations);
       results.push(row);
-      const rStr = row.redis.error ? `skip` : formatNum(row.redis.opsPerSec) + '/s';
-      const templateStrs = templateNames.map(
+      const rStr = !row.redis ? null : (row.redis.error ? 'skip' : formatNum(row.redis.opsPerSec) + '/s');
+      const templateStrs = variantNames.map(
         (t) => (row.templates[t]?.error ? '—' : formatNum(row.templates[t]?.opsPerSec) + '/s')
       );
-      console.log(`Redis ${rStr} | ${templateNames.map((t, i) => `${t} ${templateStrs[i]}`).join(' | ')}`);
+      const parts = variantNames.map((name, i) => `${name} ${templateStrs[i]}`);
+      if (rStr) parts.unshift(`Redis ${rStr}`);
+      console.log(parts.join(' | '));
     } catch (e) {
       console.log(`ERROR: ${e.message}`);
       results.push({ suite: suite.name, error: e.message });
@@ -599,20 +747,25 @@ async function main() {
 
   const memAfter = {
     process: process.memoryUsage(),
-    redis: await getRedisMemory(redis),
-    resplite: await getRespliteMemory(respliteClients[0]?.client),
+    redis: redis ? await getRedisMemory(redis) : null,
+    resplite: Object.fromEntries(await Promise.all(
+      respliteClients.map(async ({ name, client }) => [name, await getRespliteMemory(client)])
+    )),
+    cache: Object.fromEntries(await Promise.all(
+      respliteClients.map(async ({ name, client }) => [name, await getRespliteCache(client)])
+    )),
   };
 
-  await redis.quit();
+  if (redis) await redis.quit();
   for (const { client } of respliteClients) await client.quit();
   for (const { child } of children) child.kill();
 
-  const headerCols = ['Suite', 'Redis', ...templateNames];
+  const headerCols = ['Suite', ...(redis ? ['Redis'] : []), ...variantNames];
   const summaryRows = results.map((r) => {
     if (r.error) return { suite: r.suite, values: [`ERROR: ${r.error}`] };
-    const redisVal = r.redis.error ? '—' : formatNum(r.redis.opsPerSec);
-    const templateVals = templateNames.map((t) => (r.templates[t]?.error ? '—' : formatNum(r.templates[t]?.opsPerSec)));
-    return { suite: r.suite, values: [redisVal, ...templateVals] };
+    const redisVals = !r.redis ? [] : [r.redis.error ? '—' : formatNum(r.redis.opsPerSec)];
+    const templateVals = variantNames.map((t) => (r.templates[t]?.error ? '—' : formatNum(r.templates[t]?.opsPerSec)));
+    return { suite: r.suite, values: [...redisVals, ...templateVals] };
   });
 
   const suiteWidth = Math.max(
@@ -644,17 +797,57 @@ async function main() {
     ].join(' | '));
   }
 
+  if (compareCaches && variantNames.includes('cache-off')) {
+    console.log('');
+    console.log('--- Cache uplift vs cache-off ---');
+    for (const result of results) {
+      if (result.error) continue;
+      const baseline = result.templates['cache-off'];
+      if (!baseline || baseline.error || !baseline.opsPerSec) continue;
+      const uplifts = variantNames
+        .filter((name) => name !== 'cache-off')
+        .map((name) => {
+          const candidate = result.templates[name];
+          if (!candidate || candidate.error) return `${name} —`;
+          const pct = ((candidate.opsPerSec / baseline.opsPerSec) - 1) * 100;
+          return `${name} ${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
+        });
+      console.log(`  ${result.suite}: ${uplifts.join(' | ')}`);
+    }
+  }
+
   console.log('');
   console.log('--- Memory (after benchmark) ---');
-  if (memAfter.redis.used_memory != null) {
+  if (memAfter.redis?.used_memory != null) {
     console.log(`  Redis:    used_memory ${formatBytes(memAfter.redis.used_memory)}, rss ${formatBytes(memAfter.redis.used_memory_rss)}`);
-  } else {
+  } else if (redis) {
     console.log('  Redis:    (INFO memory not available)');
   }
-  if (memAfter.resplite?.rss != null) {
-    console.log(`  RESPlite: heapUsed ${formatBytes(memAfter.resplite.heapUsed)}, rss ${formatBytes(memAfter.resplite.rss)} (first instance)`);
-  } else {
-    console.log('  RESPlite: (MEMORY.INFO not available)');
+  for (const name of variantNames) {
+    const memory = memAfter.resplite[name];
+    const before = memBefore.resplite[name];
+    if (memory?.rss != null) {
+      const rssDelta = before?.rss == null ? null : memory.rss - before.rss;
+      const deltaText = rssDelta == null ? '' : `, rss delta ${rssDelta >= 0 ? '+' : ''}${formatBytes(rssDelta)}`;
+      console.log(`  ${name}: heapUsed ${formatBytes(memory.heapUsed)}, rss ${formatBytes(memory.rss)}${deltaText}`);
+    } else {
+      console.log(`  ${name}: (MEMORY.INFO not available)`);
+    }
+  }
+
+  console.log('');
+  console.log('--- RESPlite application cache (after benchmark) ---');
+  for (const name of variantNames) {
+    const cache = memAfter.cache[name];
+    if (!cache) {
+      console.log(`  ${name}: (CACHE.INFO not available)`);
+      continue;
+    }
+    console.log(
+      `  ${name}: enabled ${cache.enabled ? 'yes' : 'no'}, entries ${cache.entries}, `
+      + `bytes ${formatBytes(cache.bytes)}, hits ${cache.hits}, misses ${cache.misses}, `
+      + `hit ratio ${(cache.hitRatio * 100).toFixed(2)}%`
+    );
   }
   console.log(`  Process:  heapUsed ${formatBytes(memAfter.process.heapUsed)}, rss ${formatBytes(memAfter.process.rss)}`);
 
