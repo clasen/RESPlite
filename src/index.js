@@ -25,7 +25,7 @@ const DEFAULT_PORT = 6379;
  * @param {string} [options.dbPath]
  * @param {string} [options.pragmaTemplate]
  * @param {Record<string, string|number>} [options.pragma] Override specific pragmas when needed (e.g. { synchronous: 'FULL' }). Convention: template is applied by default.
- * @param {false | {enabled?: boolean, maxEntries?: number, maxBytes?: number, maxHashFields?: number, maxHashBytes?: number}} [options.cache] Hot string/hash cache configuration, or false to disable it.
+ * @param {false | {enabled?: boolean, maxEntries?: number, maxBytes?: number, maxHashFields?: number, maxHashBytes?: number, maxSetMembers?: number, maxSetBytes?: number, maxListItems?: number, maxListBytes?: number, maxZsetMembers?: number, maxZsetBytes?: number}} [options.cache] Hot data cache configuration, or false to disable it.
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to close server and DB. Set false if you handle shutdown yourself.
  * @param {{ rename?: Record<string, string>, disabled?: string[] } | null} [options.commandPolicy] Optional: rename/disable commands for hardening.
  */

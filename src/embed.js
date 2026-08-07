@@ -37,7 +37,7 @@ export { handleConnection, createEngine, openDb };
  * @param {number} [options.port=0]               Port to listen on (0 = OS-assigned).
  * @param {string} [options.pragmaTemplate='default'] PRAGMA preset (default|performance|safety|minimal|none). Convention: this template is applied by default; no config needed.
  * @param {Record<string, string|number>} [options.pragma] Override specific pragmas only when needed (e.g. { synchronous: 'FULL' }). Applied after the template.
- * @param {false | {enabled?: boolean, maxEntries?: number, maxBytes?: number, maxHashFields?: number, maxHashBytes?: number}} [options.cache] Hot string/hash cache configuration, or false to disable it.
+ * @param {false | {enabled?: boolean, maxEntries?: number, maxBytes?: number, maxHashFields?: number, maxHashBytes?: number, maxSetMembers?: number, maxSetBytes?: number, maxListItems?: number, maxListBytes?: number, maxZsetMembers?: number, maxZsetBytes?: number}} [options.cache] Hot data cache configuration, or false to disable it.
  * @param {RESPliteHooks} [options.hooks]         Optional event hooks for observability (onUnknownCommand, onCommandError, onSocketError).
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to call close(). Set false if you handle shutdown yourself to avoid double handlers.
  * @param {{ rename?: Record<string, string>, disabled?: string[] } | null} [options.commandPolicy] Optional: rename/disable commands for hardening.

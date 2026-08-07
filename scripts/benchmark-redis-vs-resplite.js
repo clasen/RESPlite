@@ -72,7 +72,7 @@ const CACHE_PROFILES = Object.freeze([
   },
   {
     name: 'cache-default',
-    description: '50k entries, 64 MiB; hash limit 256 fields / 256 KiB',
+    description: '50k entries, 64 MiB; per-collection limit 256 items / 256 KiB',
     cache: {},
   },
   {
@@ -351,6 +351,54 @@ async function benchHlenHot(client, n) {
   for (let i = 0; i < n; i++) await client.hLen(key);
 }
 
+async function benchSmembersHot(client, n) {
+  const key = 'bm:set:members:hot';
+  await client.del(key);
+  await client.sAdd(key, Array.from({ length: 50 }, (_, i) => `m${i}`));
+  await client.sMembers(key); // complete-set cache warm-up
+  for (let i = 0; i < n; i++) await client.sMembers(key);
+}
+
+async function benchSismemberHot(client, n) {
+  const key = 'bm:set:member:hot';
+  await client.del(key);
+  await client.sAdd(key, Array.from({ length: 50 }, (_, i) => `m${i}`));
+  await client.sMembers(key); // complete-set cache warm-up
+  for (let i = 0; i < n; i++) await client.sIsMember(key, `m${i % 50}`);
+}
+
+async function benchLrangeHot(client, n) {
+  const key = 'bm:list:range:hot';
+  await client.del(key);
+  await client.rPush(key, Array.from({ length: 50 }, (_, i) => `item-${i}`));
+  await client.lRange(key, 0, -1); // complete-list cache warm-up
+  for (let i = 0; i < n; i++) await client.lRange(key, 0, 19);
+}
+
+async function benchLindexHot(client, n) {
+  const key = 'bm:list:index:hot';
+  await client.del(key);
+  await client.rPush(key, Array.from({ length: 50 }, (_, i) => `item-${i}`));
+  await client.lRange(key, 0, -1); // complete-list cache warm-up
+  for (let i = 0; i < n; i++) await client.lIndex(key, i % 50);
+}
+
+async function benchZrangeHot(client, n) {
+  const key = 'bm:zset:range:hot';
+  await client.del(key);
+  await client.zAdd(key, Array.from({ length: 100 }, (_, i) => ({ score: i, value: `m${i}` })));
+  await client.zRange(key, 0, -1); // complete-sorted-set cache warm-up
+  for (let i = 0; i < n; i++) await client.zRange(key, 0, 19);
+}
+
+async function benchZscoreHot(client, n) {
+  const key = 'bm:zset:score:hot';
+  await client.del(key);
+  await client.zAdd(key, Array.from({ length: 100 }, (_, i) => ({ score: i, value: `m${i}` })));
+  await client.zRange(key, 0, -1); // complete-sorted-set cache warm-up
+  for (let i = 0; i < n; i++) await client.zScore(key, `m${i % 100}`);
+}
+
 async function benchSaddSmembers(client, n) {
   const key = 'bm:set';
   for (let i = 0; i < n; i++) {
@@ -606,6 +654,12 @@ const SUITES = [
   { name: 'HGETALL(50)', fn: benchHgetall, iterScale: 1, cacheFocus: true },
   { name: 'HLEN(50) (uncached)', fn: benchHlen, iterScale: 1, cacheFocus: true },
   { name: 'HLEN(50) (hot)', fn: benchHlenHot, iterScale: 1, cacheFocus: true },
+  { name: 'SMEMBERS(50) (hot)', fn: benchSmembersHot, iterScale: 1, cacheFocus: true },
+  { name: 'SISMEMBER(50) (hot)', fn: benchSismemberHot, iterScale: 1, cacheFocus: true },
+  { name: 'LRANGE(20/50) (hot)', fn: benchLrangeHot, iterScale: 1, cacheFocus: true },
+  { name: 'LINDEX(50) (hot)', fn: benchLindexHot, iterScale: 1, cacheFocus: true },
+  { name: 'ZRANGE(20/100) (hot)', fn: benchZrangeHot, iterScale: 1, cacheFocus: true },
+  { name: 'ZSCORE(100) (hot)', fn: benchZscoreHot, iterScale: 1, cacheFocus: true },
   { name: 'SADD+SMEMBERS', fn: benchSaddSmembers, iterScale: 1 },
   { name: 'LPUSH+LRANGE', fn: benchLpushLrange, iterScale: 1 },
   { name: 'LREM', fn: benchLrem, iterScale: 1 },

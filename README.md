@@ -67,6 +67,12 @@ const srv = await createRESPlite({
     maxBytes: 64 * 1024 * 1024,
     maxHashFields: 256,
     maxHashBytes: 256 * 1024,
+    maxSetMembers: 256,
+    maxSetBytes: 256 * 1024,
+    maxListItems: 256,
+    maxListBytes: 256 * 1024,
+    maxZsetMembers: 256,
+    maxZsetBytes: 256 * 1024,
   },
   commandPolicy: {
     rename: { KEYS: 'SAFE_KEYS' }, // original KEYS is blocked
@@ -86,7 +92,7 @@ const srv = await createRESPlite({
 });
 ```
 
-The hot string and small-hash cache is enabled by default with the limits shown above. SQLite remains the source of truth. Hashes with field TTLs or above either per-hash limit are not cached. Pass `cache: false` to disable it, or provide only the limits you want to override.
+The hot string and small-collection cache is enabled by default with the limits shown above. SQLite remains the source of truth. Complete hashes, sets, lists, and sorted sets above their per-type limits are not cached; hashes with field TTLs are also excluded. Pass `cache: false` to disable it, or provide only the limits you want to override.
 
 Available hooks:
 
@@ -652,7 +658,7 @@ This starts three isolated RESPlite processes:
 | `cache-default` | 50k entries / 64 MiB | Selected PRAGMA template |
 | `cache-production` | 200k entries / 512 MiB | 1 GiB page cache / 2 GiB mmap |
 
-The report includes hot and uncached string/hash reads, uplift relative to `cache-off`, RSS per process, and `CACHE.INFO` counters. `--cache-only` limits execution to the cache-sensitive workloads; omit it to run the complete benchmark. Add `--resplite-only` when Redis is not available:
+The report includes hot and uncached reads for strings, hashes, sets, lists, and sorted sets, uplift relative to `cache-off`, RSS per process, and `CACHE.INFO` counters. `--cache-only` limits execution to the cache-sensitive workloads; omit it to run the complete benchmark. Add `--resplite-only` when Redis is not available:
 
 ```bash
 npm run benchmark -- --template default --compare-caches --cache-only --resplite-only

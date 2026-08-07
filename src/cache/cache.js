@@ -9,6 +9,12 @@ export function createCache(opts = {}) {
   const limits = Object.freeze({
     maxHashFields: opts.maxHashFields ?? 256,
     maxHashBytes: opts.maxHashBytes ?? 256 * 1024,
+    maxSetMembers: opts.maxSetMembers ?? 256,
+    maxSetBytes: opts.maxSetBytes ?? 256 * 1024,
+    maxListItems: opts.maxListItems ?? 256,
+    maxListBytes: opts.maxListBytes ?? 256 * 1024,
+    maxZsetMembers: opts.maxZsetMembers ?? 256,
+    maxZsetBytes: opts.maxZsetBytes ?? 256 * 1024,
   });
   const lru = createLRU({
     maxEntries: opts.maxEntries ?? 50000,

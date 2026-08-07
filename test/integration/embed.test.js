@@ -94,6 +94,41 @@ describe('createRESPlite', () => {
     }
   });
 
+  it('warms, reuses and invalidates set, list and sorted-set caches through RESP commands', async () => {
+    const srv = await createRESPlite();
+    const client = await redisClient(srv.port);
+    try {
+      await client.sAdd('tags', ['a', 'b']);
+      await client.rPush('queue', ['first', 'second']);
+      await client.zAdd('ranking', [
+        { score: 1, value: 'alice' },
+        { score: 2, value: 'bob' },
+      ]);
+
+      assert.equal(infoObject(await client.sendCommand(['CACHE.INFO'])).entries, '0');
+      assert.deepEqual((await client.sMembers('tags')).sort(), ['a', 'b']);
+      assert.deepEqual(await client.lRange('queue', 0, -1), ['first', 'second']);
+      assert.deepEqual(await client.zRange('ranking', 0, -1), ['alice', 'bob']);
+
+      const warmed = infoObject(await client.sendCommand(['CACHE.INFO']));
+      assert.equal(warmed.entries, '3');
+      assert.equal(warmed.misses, '3');
+
+      assert.equal(await client.sIsMember('tags', 'b'), true);
+      assert.equal(await client.lIndex('queue', 1), 'second');
+      assert.equal(await client.zScore('ranking', 'bob'), 2);
+      assert.equal(infoObject(await client.sendCommand(['CACHE.INFO'])).hits, '3');
+
+      await client.sAdd('tags', 'c');
+      await client.lPush('queue', 'zero');
+      await client.zAdd('ranking', { score: 3, value: 'carol' });
+      assert.equal(infoObject(await client.sendCommand(['CACHE.INFO'])).entries, '0');
+    } finally {
+      await client.quit();
+      await srv.close();
+    }
+  });
+
   it('defaults to in-memory db when no db path given', async () => {
     const srv = await createRESPlite();
     const client = await redisClient(srv.port);

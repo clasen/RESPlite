@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createEngine } from '../../src/engine/engine.js';
 import { openDb } from '../../src/storage/sqlite/db.js';
+import { createCache } from '../../src/cache/cache.js';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 describe('Engine lists', () => {
@@ -69,5 +70,118 @@ describe('Engine lists', () => {
   it('LREM throws WRONGTYPE on non-list key', () => {
     engine.set('lrem:str', 'value');
     assert.throws(() => engine.lrem('lrem:str', 1, 'x'), /WRONGTYPE/);
+  });
+});
+
+describe('Engine list cache', () => {
+  function cachedEngine({ now = 1_000, cacheOptions = {} } = {}) {
+    const db = openDb(tmpDbPath());
+    const cache = createCache({ enabled: true, ...cacheOptions });
+    let currentTime = now;
+    const engine = createEngine({ db, cache, clock: () => currentTime });
+    return {
+      db,
+      cache,
+      engine,
+      advance(ms) { currentTime += ms; },
+    };
+  }
+
+  it('caches complete LRANGE results and serves private copies to list reads', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.rpush('list', 'a', 'b', 'c');
+    const first = engine.lrange('list', 0, -1);
+    assert.equal(cache.stats.misses, 1);
+    assert.equal(cache.stats.entries, 1);
+
+    first[0][0] = 'X'.charCodeAt(0);
+    assert.deepEqual(engine.lrange('list', 0, 1).map((v) => v.toString()), ['a', 'b']);
+    assert.equal(engine.lindex('list', -1).toString(), 'c');
+    assert.equal(engine.llen('list'), 3);
+    assert.equal(cache.stats.hits, 3);
+    db.close();
+  });
+
+  it('does not populate the list cache from a partial LRANGE', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.rpush('list', 'a', 'b', 'c');
+    assert.deepEqual(engine.lrange('list', 0, 1).map((v) => v.toString()), ['a', 'b']);
+    assert.equal(cache.stats.entries, 0);
+    db.close();
+  });
+
+  it('keeps cached LRANGE edge cases identical to SQLite reads', () => {
+    const { db, engine } = cachedEngine();
+    engine.rpush('list', 'a', 'b', 'c');
+    const ranges = [[0, 0], [0, 20], [-2, -1], [100, -1], [-100, -100], [2, 0]];
+    const uncached = ranges.map(([start, stop]) =>
+      engine.lrange('list', start, stop).map((v) => v.toString())
+    );
+    engine.lrange('list', 0, -1);
+    const cached = ranges.map(([start, stop]) =>
+      engine.lrange('list', start, stop).map((v) => v.toString())
+    );
+    assert.deepEqual(cached, uncached);
+    db.close();
+  });
+
+  it('invalidates lists after every supported mutation', () => {
+    const { db, cache, engine } = cachedEngine();
+    const recache = () => {
+      engine.lrange('list', 0, -1);
+      assert.equal(cache.stats.entries, 1);
+    };
+
+    engine.rpush('list', 'a', 'b', 'c', 'b');
+    recache();
+    engine.lpush('list', 'head');
+    assert.equal(cache.stats.entries, 0);
+    recache();
+    engine.rpush('list', 'tail');
+    assert.equal(cache.stats.entries, 0);
+    recache();
+    engine.lpop('list');
+    assert.equal(cache.stats.entries, 0);
+    recache();
+    engine.rpop('list');
+    assert.equal(cache.stats.entries, 0);
+    recache();
+    engine.lrem('list', 1, 'b');
+    assert.equal(cache.stats.entries, 0);
+    recache();
+    engine.lset('list', 0, 'changed');
+    assert.equal(cache.stats.entries, 0);
+    recache();
+    engine.ltrim('list', 0, 0);
+    assert.equal(cache.stats.entries, 0);
+    assert.deepEqual(engine.lrange('list', 0, -1).map((v) => v.toString()), ['changed']);
+    db.close();
+  });
+
+  it('does not cache lists above their item or byte limit', () => {
+    const byItems = cachedEngine({ cacheOptions: { maxListItems: 1 } });
+    byItems.engine.rpush('list', 'a', 'b');
+    assert.equal(byItems.engine.lrange('list', 0, -1).length, 2);
+    assert.equal(byItems.cache.stats.entries, 0);
+    byItems.db.close();
+
+    const byBytes = cachedEngine({ cacheOptions: { maxListBytes: 2 } });
+    byBytes.engine.rpush('list', 'abc');
+    assert.equal(byBytes.engine.lrange('list', 0, -1)[0].toString(), 'abc');
+    assert.equal(byBytes.cache.stats.entries, 0);
+    byBytes.db.close();
+  });
+
+  it('respects key expiration for cached lists', () => {
+    const { db, cache, engine, advance } = cachedEngine();
+    engine.rpush('list', 'a');
+    assert.equal(engine.pexpire('list', 100), true);
+    engine.lrange('list', 0, -1);
+    assert.equal(cache.stats.entries, 1);
+    advance(101);
+    assert.deepEqual(engine.lrange('list', 0, -1), []);
+    assert.equal(cache.stats.entries, 0);
+    assert.equal(engine.type('list'), 'none');
+    db.close();
   });
 });

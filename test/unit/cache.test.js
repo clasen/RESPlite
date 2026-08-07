@@ -27,6 +27,35 @@ describe('Cache', () => {
     assert.equal(cache.stats.misses, 1);
   });
 
+  it('exposes per-type collection limits', () => {
+    const cache = createCache({
+      maxSetMembers: 10,
+      maxSetBytes: 11,
+      maxListItems: 12,
+      maxListBytes: 13,
+      maxZsetMembers: 14,
+      maxZsetBytes: 15,
+    });
+    assert.deepEqual(
+      {
+        maxSetMembers: cache.limits.maxSetMembers,
+        maxSetBytes: cache.limits.maxSetBytes,
+        maxListItems: cache.limits.maxListItems,
+        maxListBytes: cache.limits.maxListBytes,
+        maxZsetMembers: cache.limits.maxZsetMembers,
+        maxZsetBytes: cache.limits.maxZsetBytes,
+      },
+      {
+        maxSetMembers: 10,
+        maxSetBytes: 11,
+        maxListItems: 12,
+        maxListBytes: 13,
+        maxZsetMembers: 14,
+        maxZsetBytes: 15,
+      }
+    );
+  });
+
   it('promotes hits and evicts the least recently used entry', () => {
     const lru = createLRU({ maxEntries: 2 });
     lru.set('a', { value: Buffer.from('a') });

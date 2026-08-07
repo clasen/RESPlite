@@ -104,6 +104,171 @@ export function createEngine(opts = {}) {
     return pair ? Buffer.from(pair[1]) : null;
   }
 
+  function readCachedCollection(key, kind) {
+    if (!cache) return CACHE_MISS;
+    const entry = cache.get(cacheKey(key));
+    if (!entry || entry.kind !== kind) return CACHE_MISS;
+    if (entry.expiresAt != null && entry.expiresAt <= clock()) {
+      invalidateCachedKey(key);
+      keys.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  function cacheSet(key, members, meta) {
+    if (!cache) return;
+    const maxMembers = cache.limits?.maxSetMembers ?? 256;
+    const maxBytes = cache.limits?.maxSetBytes ?? 256 * 1024;
+    let bytes = 0;
+    for (const member of members) bytes += member.length;
+    if (members.length > maxMembers || bytes > maxBytes) {
+      invalidateCachedKey(key);
+      return;
+    }
+
+    const cachedMembers = new Map();
+    for (const member of members) {
+      const copy = Buffer.from(member);
+      cachedMembers.set(cacheKey(copy), copy);
+    }
+    cache.set(cacheKey(key), 'set', cachedMembers, meta.version, meta.expiresAt);
+  }
+
+  function copyCachedSet(members) {
+    return Array.from(members.values(), (member) => Buffer.from(member));
+  }
+
+  function randomCachedSetMembers(members, count) {
+    const values = Array.from(members.values());
+    if (values.length === 0) return count != null && count !== 1 ? [] : null;
+    const c = count == null ? 1 : count;
+    if (c === 1) return Buffer.from(values[Math.floor(Math.random() * values.length)]);
+    if (c > 0) {
+      const shuffled = values.slice();
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      return shuffled.slice(0, Math.min(c, shuffled.length)).map((member) => Buffer.from(member));
+    }
+    const out = [];
+    for (let i = 0; i < -c; i++) {
+      out.push(Buffer.from(values[Math.floor(Math.random() * values.length)]));
+    }
+    return out;
+  }
+
+  function cacheList(key, values, meta) {
+    if (!cache) return;
+    const maxItems = cache.limits?.maxListItems ?? 256;
+    const maxBytes = cache.limits?.maxListBytes ?? 256 * 1024;
+    let bytes = 0;
+    for (const value of values) bytes += value.length;
+    if (values.length > maxItems || bytes > maxBytes) {
+      invalidateCachedKey(key);
+      return;
+    }
+    cache.set(
+      cacheKey(key),
+      'list',
+      values.map((value) => Buffer.from(value)),
+      meta.version,
+      meta.expiresAt
+    );
+  }
+
+  // Keep the same rank clamping used by the SQLite list storage so cache hits
+  // and misses have identical behavior for every supported index shape.
+  function cachedListRange(values, start, stop) {
+    const len = values.length;
+    if (len === 0) return [];
+    const s = start < 0 ? Math.max(0, len + start) : Math.min(start, len - 1);
+    const e = stop < 0 ? Math.max(0, len + stop) : Math.min(stop, len - 1);
+    if (s > e) return [];
+    return values.slice(s, e + 1).map((value) => Buffer.from(value));
+  }
+
+  function cachedListIndex(values, index) {
+    const i = index < 0 ? values.length + index : index;
+    return i < 0 || i >= values.length ? null : Buffer.from(values[i]);
+  }
+
+  function cacheZset(key, flat, meta) {
+    if (!cache) return;
+    const maxMembers = cache.limits?.maxZsetMembers ?? 256;
+    const maxBytes = cache.limits?.maxZsetBytes ?? 256 * 1024;
+    const memberCount = flat.length / 2;
+    let bytes = 0;
+    for (let i = 0; i < flat.length; i += 2) {
+      bytes += flat[i].length + Buffer.byteLength(String(flat[i + 1]));
+    }
+    if (memberCount > maxMembers || bytes > maxBytes) {
+      invalidateCachedKey(key);
+      return;
+    }
+
+    // Map insertion order is the canonical score/member ascending order.
+    const entries = new Map();
+    for (let i = 0; i < flat.length; i += 2) {
+      const member = Buffer.from(flat[i]);
+      const score = String(flat[i + 1]);
+      entries.set(cacheKey(member), [member, score, Number(score)]);
+    }
+    cache.set(cacheKey(key), 'zset', entries, meta.version, meta.expiresAt);
+  }
+
+  function formatCachedZset(entries, withScores) {
+    const out = [];
+    for (const [member, score] of entries) {
+      out.push(Buffer.from(member));
+      if (withScores) out.push(score);
+    }
+    return out;
+  }
+
+  function cachedZsetRange(entries, start, stop, { reverse = false, withScores = false } = {}) {
+    const ordered = Array.from(entries.values());
+    if (reverse) ordered.reverse();
+    const len = ordered.length;
+    if (len === 0) return [];
+
+    let s;
+    let e;
+    if (!reverse && start >= 0 && stop >= 0) {
+      if (start > stop) return [];
+      s = start;
+      e = stop;
+    } else {
+      s = start >= 0 ? start : Math.max(0, len + start);
+      e = stop >= 0 ? stop : Math.max(0, len + stop);
+      if (s > e) return [];
+      s = Math.min(s, len - 1);
+      e = Math.min(e, len - 1);
+    }
+    return formatCachedZset(ordered.slice(s, e + 1), withScores);
+  }
+
+  function cachedZsetScoreRange(entries, min, max, options = {}) {
+    let ordered = Array.from(entries.values()).filter((entry) => entry[2] >= min && entry[2] <= max);
+    if (options.reverse) ordered.reverse();
+    const offset = Math.max(0, options.offset ?? 0);
+    const limit = options.limit;
+    if (limit != null && limit >= 0) ordered = ordered.slice(offset, offset + limit);
+    else ordered = ordered.slice(offset);
+    return formatCachedZset(ordered, options.withScores);
+  }
+
+  function cachedZsetRank(entries, member, reverse = false) {
+    const memberKey = cacheKey(member);
+    let index = 0;
+    for (const key of entries.keys()) {
+      if (key === memberKey) return reverse ? entries.size - index - 1 : index;
+      index++;
+    }
+    return null;
+  }
+
   function versionAfterWrite(meta) {
     return meta ? meta.version + 1 : 1;
   }
@@ -434,7 +599,9 @@ export function createEngine(opts = {}) {
       const k = asKey(key);
       getKeyMeta(key);
       const buf = members.map((m) => (Buffer.isBuffer(m) ? m : asKey(m)));
-      return sets.add(k, buf);
+      const added = sets.add(k, buf);
+      invalidateCachedKey(k);
+      return added;
     },
 
     srem(key, members) {
@@ -442,29 +609,41 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return 0;
       expectSet(meta);
-      return sets.remove(k, members.map((m) => asKey(m)));
+      const removed = sets.remove(k, members.map((m) => asKey(m)));
+      invalidateCachedKey(k);
+      return removed;
     },
 
     smembers(key) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'set');
+      if (cached !== CACHE_MISS) return cached ? copyCachedSet(cached) : [];
+      const meta = getKeyMeta(k);
       if (!meta) return [];
       expectSet(meta);
-      return sets.members(k);
+      const members = sets.members(k);
+      cacheSet(k, members, meta);
+      return members;
     },
 
     sismember(key, member) {
-      const meta = getKeyMeta(key);
+      const k = asKey(key);
+      const cached = readCachedCollection(k, 'set');
+      if (cached !== CACHE_MISS) return cached && cached.has(cacheKey(asKey(member))) ? 1 : 0;
+      const meta = getKeyMeta(k);
       if (!meta) return 0;
       expectSet(meta);
-      return sets.has(asKey(key), asKey(member)) ? 1 : 0;
+      return sets.has(k, asKey(member)) ? 1 : 0;
     },
 
     scard(key) {
-      const meta = getKeyMeta(key);
+      const k = asKey(key);
+      const cached = readCachedCollection(k, 'set');
+      if (cached !== CACHE_MISS) return cached ? cached.size : 0;
+      const meta = getKeyMeta(k);
       if (!meta) return 0;
       expectSet(meta);
-      return sets.count(asKey(key));
+      return sets.count(k);
     },
 
     spop(key, count = null) {
@@ -472,12 +651,16 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return count != null && count !== 1 ? [] : null;
       expectSet(meta);
-      return sets.popRandom(k, count);
+      const popped = sets.popRandom(k, count);
+      invalidateCachedKey(k);
+      return popped;
     },
 
     srandmember(key, count = null) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'set');
+      if (cached !== CACHE_MISS) return cached ? randomCachedSetMembers(cached, count) : null;
+      const meta = getKeyMeta(k);
       if (!meta) return count != null && count !== 1 ? [] : null;
       expectSet(meta);
       return sets.getRandomMembers(k, count);
@@ -488,6 +671,7 @@ export function createEngine(opts = {}) {
       getKeyMeta(key);
       const buf = values.map((v) => (Buffer.isBuffer(v) ? v : asValue(v)));
       const n = lists.lpush(k, buf);
+      invalidateCachedKey(k);
       if (this._blockingManager) this._blockingManager.wakeup(k);
       return n;
     },
@@ -497,13 +681,16 @@ export function createEngine(opts = {}) {
       getKeyMeta(key);
       const buf = values.map((v) => (Buffer.isBuffer(v) ? v : asValue(v)));
       const n = lists.rpush(k, buf);
+      invalidateCachedKey(k);
       if (this._blockingManager) this._blockingManager.wakeup(k);
       return n;
     },
 
     llen(key) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'list');
+      if (cached !== CACHE_MISS) return cached ? cached.length : 0;
+      const meta = getKeyMeta(k);
       if (!meta) return 0;
       expectList(meta);
       return lists.llen(k);
@@ -511,22 +698,28 @@ export function createEngine(opts = {}) {
 
     lrange(key, start, stop) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
-      if (!meta) return [];
-      expectList(meta);
       const s = parseInt(String(start), 10);
       const e = parseInt(String(stop), 10);
       if (Number.isNaN(s) || Number.isNaN(e)) return [];
-      return lists.lrange(k, s, e);
+      const cached = readCachedCollection(k, 'list');
+      if (cached !== CACHE_MISS) return cached ? cachedListRange(cached, s, e) : [];
+      const meta = getKeyMeta(k);
+      if (!meta) return [];
+      expectList(meta);
+      const values = lists.lrange(k, s, e);
+      if (s === 0 && e === -1) cacheList(k, values, meta);
+      return values;
     },
 
     lindex(key, index) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
-      if (!meta) return null;
-      expectList(meta);
       const i = parseInt(String(index), 10);
       if (Number.isNaN(i)) return null;
+      const cached = readCachedCollection(k, 'list');
+      if (cached !== CACHE_MISS) return cached ? cachedListIndex(cached, i) : null;
+      const meta = getKeyMeta(k);
+      if (!meta) return null;
+      expectList(meta);
       return lists.lindex(k, i);
     },
 
@@ -535,7 +728,9 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return count != null && count > 0 ? [] : null;
       expectList(meta);
-      return lists.lpop(k, count);
+      const popped = lists.lpop(k, count);
+      invalidateCachedKey(k);
+      return popped;
     },
 
     rpop(key, count = null) {
@@ -543,7 +738,9 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return count != null && count > 0 ? [] : null;
       expectList(meta);
-      return lists.rpop(k, count);
+      const popped = lists.rpop(k, count);
+      invalidateCachedKey(k);
+      return popped;
     },
 
     lrem(key, count, element) {
@@ -554,7 +751,9 @@ export function createEngine(opts = {}) {
       const c = parseInt(Buffer.isBuffer(count) ? count.toString() : String(count), 10);
       if (Number.isNaN(c)) throw new Error('ERR value is not an integer or out of range');
       const elem = Buffer.isBuffer(element) ? element : asValue(element);
-      return lists.lrem(k, c, elem);
+      const removed = lists.lrem(k, c, elem);
+      invalidateCachedKey(k);
+      return removed;
     },
 
     lset(key, index, value) {
@@ -566,6 +765,7 @@ export function createEngine(opts = {}) {
       if (Number.isNaN(i)) throw new Error('ERR index out of range');
       const val = Buffer.isBuffer(value) ? value : asValue(value);
       lists.lset(k, i, val);
+      invalidateCachedKey(k);
     },
 
     ltrim(key, start, stop) {
@@ -577,6 +777,7 @@ export function createEngine(opts = {}) {
       const e = parseInt(Buffer.isBuffer(stop) ? stop.toString() : String(stop), 10);
       if (Number.isNaN(s) || Number.isNaN(e)) return;
       lists.ltrim(k, s, e);
+      invalidateCachedKey(k);
     },
 
     zadd(key, scoreMemberPairs) {
@@ -591,7 +792,9 @@ export function createEngine(opts = {}) {
         const member = Buffer.isBuffer(memberRaw) ? memberRaw : asKey(memberRaw);
         pairs.push({ score, member });
       }
-      return zsets.add(k, pairs);
+      const added = zsets.add(k, pairs);
+      invalidateCachedKey(k);
+      return added;
     },
 
     zrem(key, members) {
@@ -599,19 +802,29 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return 0;
       expectZset(meta);
-      return zsets.remove(k, members.map((m) => asKey(m)));
+      const removed = zsets.remove(k, members.map((m) => asKey(m)));
+      invalidateCachedKey(k);
+      return removed;
     },
 
     zcard(key) {
-      const meta = getKeyMeta(key);
+      const k = asKey(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) return cached ? cached.size : 0;
+      const meta = getKeyMeta(k);
       if (!meta) return 0;
       expectZset(meta);
-      return zsets.count(asKey(key));
+      return zsets.count(k);
     },
 
     zscore(key, member) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) {
+        const entry = cached?.get(cacheKey(asKey(member)));
+        return entry ? entry[1] : null;
+      }
+      const meta = getKeyMeta(k);
       if (!meta) return null;
       expectZset(meta);
       return zsets.score(k, asKey(member));
@@ -619,23 +832,49 @@ export function createEngine(opts = {}) {
 
     zrange(key, start, stop, options = {}) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) {
+        return cached ? cachedZsetRange(cached, start, stop, { withScores: options.withScores }) : [];
+      }
+      const meta = getKeyMeta(k);
       if (!meta) return [];
       expectZset(meta);
+      if (start === 0 && stop === -1) {
+        const flat = zsets.rangeByRank(k, 0, -1, { withScores: true });
+        cacheZset(k, flat, meta);
+        if (options.withScores) return flat;
+        return flat.filter((_, index) => index % 2 === 0);
+      }
       return zsets.rangeByRank(k, start, stop, { withScores: options.withScores });
     },
 
     zrevrange(key, start, stop, options = {}) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) {
+        return cached ? cachedZsetRange(cached, start, stop, { reverse: true, withScores: options.withScores }) : [];
+      }
+      const meta = getKeyMeta(k);
       if (!meta) return [];
       expectZset(meta);
+      if (start === 0 && stop === -1) {
+        const flat = zsets.rangeByRank(k, 0, -1, { withScores: true });
+        cacheZset(k, flat, meta);
+        const entries = [];
+        for (let i = 0; i < flat.length; i += 2) {
+          entries.push([flat[i], String(flat[i + 1]), Number(flat[i + 1])]);
+        }
+        entries.reverse();
+        return formatCachedZset(entries, options.withScores);
+      }
       return zsets.rangeByRankReverse(k, start, stop, { withScores: options.withScores });
     },
 
     zrevrank(key, member) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) return cached ? cachedZsetRank(cached, asKey(member), true) : null;
+      const meta = getKeyMeta(k);
       if (!meta) return null;
       expectZset(meta);
       return zsets.rankReverse(k, asKey(member));
@@ -643,7 +882,9 @@ export function createEngine(opts = {}) {
 
     zrank(key, member) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) return cached ? cachedZsetRank(cached, asKey(member)) : null;
+      const meta = getKeyMeta(k);
       if (!meta) return null;
       expectZset(meta);
       return zsets.rank(k, asKey(member));
@@ -651,7 +892,11 @@ export function createEngine(opts = {}) {
 
     zrangebyscore(key, min, max, options = {}) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) {
+        return cached ? cachedZsetScoreRange(cached, min, max, options) : [];
+      }
+      const meta = getKeyMeta(k);
       if (!meta) return [];
       expectZset(meta);
       return zsets.rangeByScore(k, min, max, {
@@ -663,7 +908,16 @@ export function createEngine(opts = {}) {
 
     zcount(key, min, max) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) {
+        if (!cached) return 0;
+        let count = 0;
+        for (const entry of cached.values()) {
+          if (entry[2] >= min && entry[2] <= max) count++;
+        }
+        return count;
+      }
+      const meta = getKeyMeta(k);
       if (!meta) return 0;
       expectZset(meta);
       return zsets.countByScore(k, min, max);
@@ -674,7 +928,9 @@ export function createEngine(opts = {}) {
       getKeyMeta(key);
       const inc = parseFloat(Buffer.isBuffer(increment) ? increment.toString() : String(increment));
       if (Number.isNaN(inc)) throw new Error('ERR value is not a valid float');
-      return zsets.incr(k, asKey(member), inc);
+      const score = zsets.incr(k, asKey(member), inc);
+      invalidateCachedKey(k);
+      return score;
     },
 
     zremrangebyrank(key, start, stop) {
@@ -685,7 +941,9 @@ export function createEngine(opts = {}) {
       const s = parseInt(Buffer.isBuffer(start) ? start.toString() : String(start), 10);
       const e = parseInt(Buffer.isBuffer(stop) ? stop.toString() : String(stop), 10);
       if (Number.isNaN(s) || Number.isNaN(e)) return 0;
-      return zsets.removeRangeByRank(k, s, e);
+      const removed = zsets.removeRangeByRank(k, s, e);
+      invalidateCachedKey(k);
+      return removed;
     },
 
     zremrangebyscore(key, min, max) {
@@ -696,12 +954,20 @@ export function createEngine(opts = {}) {
       const minNum = parseFloat(Buffer.isBuffer(min) ? min.toString() : String(min));
       const maxNum = parseFloat(Buffer.isBuffer(max) ? max.toString() : String(max));
       if (Number.isNaN(minNum) || Number.isNaN(maxNum)) throw new Error('ERR value is not a valid float');
-      return zsets.removeRangeByScore(k, minNum, maxNum);
+      const removed = zsets.removeRangeByScore(k, minNum, maxNum);
+      invalidateCachedKey(k);
+      return removed;
     },
 
     zrevrangebyscore(key, max, min, options = {}) {
       const k = asKey(key);
-      const meta = getKeyMeta(key);
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) {
+        return cached
+          ? cachedZsetScoreRange(cached, min, max, { ...options, reverse: true })
+          : [];
+      }
+      const meta = getKeyMeta(k);
       if (!meta) return [];
       expectZset(meta);
       return zsets.rangeByScoreReverse(k, max, min, {
