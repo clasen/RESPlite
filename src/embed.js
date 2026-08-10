@@ -70,8 +70,18 @@ export async function createRESPlite({
   await new Promise((resolve) => server.listen(port, host, resolve));
 
   let closePromise = null;
+  let onSignal = null;
+
+  const removeSignalHandlers = () => {
+    if (!onSignal) return;
+    process.off('SIGTERM', onSignal);
+    process.off('SIGINT', onSignal);
+    onSignal = null;
+  };
+
   const close = () => {
     if (closePromise) return closePromise;
+    removeSignalHandlers();
     closePromise = new Promise((resolve) => {
       for (const socket of connections) {
         socket.destroy();
@@ -86,7 +96,7 @@ export async function createRESPlite({
   };
 
   if (gracefulShutdown) {
-    const onSignal = () => {
+    onSignal = () => {
       close().then(() => process.exit(0));
     };
     process.on('SIGTERM', onSignal);

@@ -19,6 +19,7 @@ Supported:
 - `SETEX`
 - `MGET`
 - `MSET`
+- `MSETNX`
 - `DEL`
 - `EXISTS`
 - `INCR`
@@ -56,6 +57,7 @@ Supported:
 - `SREM`
 - `SMEMBERS`
 - `SISMEMBER`
+- `SMISMEMBER`
 - `SCARD`
 
 ### 6.6 Introspection and navigation

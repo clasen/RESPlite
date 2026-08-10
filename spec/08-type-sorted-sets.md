@@ -14,6 +14,8 @@ Recommended minimal set:
 * `ZREM key member [member ...]`
 * `ZCARD key`
 * `ZSCORE key member`
+* `ZMSCORE key member [member ...]`
+* `ZMPOP numkeys key [key ...] MIN|MAX [COUNT count]`
 * `ZRANGE key start stop [WITHSCORES]`
 * `ZREVRANGE key start stop [WITHSCORES]` (optional but useful)
 * `ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]`
@@ -37,6 +39,8 @@ Recommended minimal set:
   * `ZCARD` => `0`
   * `ZRANGE` => empty array
   * `ZSCORE` => `nil`
+  * `ZMSCORE` => one `nil` entry per requested member
+  * `ZMPOP` => `nil` when all requested keys are absent
 
 ## C.4 Data Model (SQLite)
 

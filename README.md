@@ -322,6 +322,9 @@ await client.mSet(['k1', 'v1', 'k2', 'v2']);
 const values = await client.mGet(['k1', 'k2', 'missing']);
 console.log(values);  // → ["v1", "v2", null]
 
+const created = await client.mSetNX({ 'new:1': 'v1', 'new:2': 'v2' });
+console.log(created); // → true only when every key was absent
+
 // Key existence and deletion
 console.log(await client.exists('k1'));        // → 1
 await client.del('k1');
@@ -350,6 +353,7 @@ console.log(await client.hExists('user:1', 'email')); // → false
 await client.sAdd('tags', ['node', 'sqlite', 'redis']);
 console.log(await client.sMembers('tags'));           // → ["node", "sqlite", "redis"]
 console.log(await client.sIsMember('tags', 'node'));  // → true
+console.log(await client.smIsMember('tags', ['node', 'missing'])); // → [true, false]
 console.log(await client.sCard('tags'));              // → 3
 
 await client.sRem('tags', 'redis');
@@ -368,6 +372,9 @@ console.log(await client.lIndex('queue', 0));      // → "a"
 
 console.log(await client.lPop('queue'));           // → "a"
 console.log(await client.rPop('queue'));           // → "e"
+
+const popped = await client.lmPop(['primary', 'queue'], 'LEFT', { COUNT: 2 });
+console.log(popped); // → ["queue", ["b", "c"]] (first non-empty key)
 ```
 
 ### Blocking list commands (BLPOP / BRPOP)
@@ -398,8 +405,12 @@ await client.zAdd('leaderboard', [
 
 console.log(await client.zCard('leaderboard'));                // → 3
 console.log(await client.zScore('leaderboard', 'bob'));        // → 250
+console.log(await client.zmScore('leaderboard', ['bob', 'missing'])); // → [250, null]
 console.log(await client.zRange('leaderboard', 0, -1));        // → ["alice", "carol", "bob"]
 console.log(await client.zRangeByScore('leaderboard', 100, 200)); // → ["alice", "carol"]
+
+const top = await client.zmPop('leaderboard', 'MAX', { COUNT: 2 });
+// → { key: "leaderboard", elements: [{ value: "bob", score: 250 }, ...] }
 ```
 
 ### Full-text search (RediSearch-like)
@@ -671,12 +682,12 @@ npm run benchmark -- --template default --compare-caches --cache-only --resplite
 | Category | Commands |
 |---|---|
 | **Connection** | PING, ECHO, QUIT |
-| **Strings** | GET, SET, MGET, MSET, DEL, EXISTS, INCR, DECR, INCRBY, DECRBY, STRLEN |
+| **Strings** | GET, SET, MGET, MSET, MSETNX, DEL, EXISTS, INCR, DECR, INCRBY, DECRBY, STRLEN |
 | **TTL** | EXPIRE, PEXPIRE, TTL, PTTL, PERSIST |
 | **Hashes** | HSET, HGET, HMGET, HGETALL, HKEYS, HVALS, HDEL, HEXISTS, HINCRBY, HEXPIRE, HTTL, HPERSIST |
-| **Sets** | SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SPOP, SRANDMEMBER |
-| **Lists** | LPUSH, RPUSH, LLEN, LRANGE, LINDEX, LPOP, RPOP, LSET, LTRIM, BLPOP, BRPOP |
-| **Sorted sets** | ZADD, ZREM, ZCARD, ZSCORE, ZRANGE, ZREVRANGE, ZRANGEBYSCORE, ZREVRANGEBYSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY, ZREMRANGEBYRANK, ZREMRANGEBYSCORE |
+| **Sets** | SADD, SREM, SMEMBERS, SISMEMBER, SMISMEMBER, SCARD, SPOP, SRANDMEMBER |
+| **Lists** | LPUSH, RPUSH, LLEN, LRANGE, LINDEX, LPOP, RPOP, LMPOP, LSET, LTRIM, BLPOP, BRPOP |
+| **Sorted sets** | ZADD, ZREM, ZCARD, ZSCORE, ZMSCORE, ZMPOP, ZRANGE, ZREVRANGE, ZRANGEBYSCORE, ZREVRANGEBYSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY, ZREMRANGEBYRANK, ZREMRANGEBYSCORE |
 | **Search (FT.\*)** | FT.CREATE, FT.INFO, FT.ADD, FT.DEL, FT.GET, FT.SEARCH, FT.SUGADD, FT.SUGGET, FT.SUGDEL |
 | **Introspection** | TYPE, OBJECT IDLETIME, SCAN, KEYS, RENAME, MONITOR |
 | **Admin** | SQLITE.INFO, CACHE.INFO, MEMORY.INFO |

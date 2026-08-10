@@ -5,8 +5,8 @@
 
 /** @type {Set<string>} Commands that modify data (write). */
 const WRITE_COMMANDS = new Set([
-  'SET', 'SETEX', 'MSET', 'DEL', 'UNLINK', 'EXPIRE', 'PEXPIRE', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
-  'HSET', 'HDEL', 'HINCRBY', 'SADD', 'SREM', 'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LREM', 'ZADD', 'ZREM',
+  'SET', 'SETEX', 'MSET', 'MSETNX', 'DEL', 'UNLINK', 'EXPIRE', 'PEXPIRE', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
+  'HSET', 'HDEL', 'HINCRBY', 'SADD', 'SREM', 'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LREM', 'LMPOP', 'ZADD', 'ZREM', 'ZMPOP',
   'FT.CREATE', 'FT.ADD', 'FT.DEL', 'FT.SUGADD', 'FT.SUGDEL', 'CLIENT',
 ]);
 
@@ -31,7 +31,7 @@ function docFor(name, canonicalName = name) {
     } else if (['MGET', 'EXISTS', 'KEYS', 'SCAN'].includes(canonicalName)) {
       arity = -2;
       lastKey = -1;
-    } else if (canonicalName === 'MSET') {
+    } else if (canonicalName === 'MSET' || canonicalName === 'MSETNX') {
       arity = -3;
       lastKey = -1;
       step = 2;

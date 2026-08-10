@@ -17,6 +17,7 @@ import * as type from './type.js';
 import * as object from './object.js';
 import * as mget from './mget.js';
 import * as mset from './mset.js';
+import * as msetnx from './msetnx.js';
 import * as expire from './expire.js';
 import * as pexpire from './pexpire.js';
 import * as ttl from './ttl.js';
@@ -43,6 +44,7 @@ import * as sadd from './sadd.js';
 import * as srem from './srem.js';
 import * as smembers from './smembers.js';
 import * as sismember from './sismember.js';
+import * as smismember from './smismember.js';
 import * as scard from './scard.js';
 import * as spop from './spop.js';
 import * as srandmember from './srandmember.js';
@@ -58,6 +60,7 @@ import * as lset from './lset.js';
 import * as ltrim from './ltrim.js';
 import * as blpop from './blpop.js';
 import * as brpop from './brpop.js';
+import * as lmpop from './lmpop.js';
 import * as scan from './scan.js';
 import * as keys from './keys.js';
 import * as rename from './rename.js';
@@ -65,6 +68,8 @@ import * as zadd from './zadd.js';
 import * as zrem from './zrem.js';
 import * as zcard from './zcard.js';
 import * as zscore from './zscore.js';
+import * as zmscore from './zmscore.js';
+import * as zmpop from './zmpop.js';
 import * as zrange from './zrange.js';
 import * as zrangebyscore from './zrangebyscore.js';
 import * as zrevrange from './zrevrange.js';
@@ -108,6 +113,7 @@ const HANDLERS = new Map([
   ['OBJECT', (e, a) => object.handleObject(e, a)],
   ['MGET', (e, a) => mget.handleMget(e, a)],
   ['MSET', (e, a) => mset.handleMset(e, a)],
+  ['MSETNX', (e, a) => msetnx.handleMsetnx(e, a)],
   ['EXPIRE', (e, a) => expire.handleExpire(e, a)],
   ['PEXPIRE', (e, a) => pexpire.handlePexpire(e, a)],
   ['TTL', (e, a) => ttl.handleTtl(e, a)],
@@ -134,6 +140,7 @@ const HANDLERS = new Map([
   ['SREM', (e, a) => srem.handleSrem(e, a)],
   ['SMEMBERS', (e, a) => smembers.handleSmembers(e, a)],
   ['SISMEMBER', (e, a) => sismember.handleSismember(e, a)],
+  ['SMISMEMBER', (e, a) => smismember.handleSmismember(e, a)],
   ['SCARD', (e, a) => scard.handleScard(e, a)],
   ['SPOP', (e, a) => spop.handleSpop(e, a)],
   ['SRANDMEMBER', (e, a) => srandmember.handleSrandmember(e, a)],
@@ -149,6 +156,7 @@ const HANDLERS = new Map([
   ['LTRIM', (e, a) => ltrim.handleLtrim(e, a)],
   ['BLPOP', (e, a, ctx) => blpop.handleBlpop(e, a, ctx)],
   ['BRPOP', (e, a, ctx) => brpop.handleBrpop(e, a, ctx)],
+  ['LMPOP', (e, a) => lmpop.handleLmpop(e, a)],
   ['SCAN', (e, a) => scan.handleScan(e, a)],
   ['KEYS', (e, a) => keys.handleKeys(e, a)],
   ['RENAME', (e, a) => rename.handleRename(e, a)],
@@ -156,6 +164,8 @@ const HANDLERS = new Map([
   ['ZREM', (e, a) => zrem.handleZrem(e, a)],
   ['ZCARD', (e, a) => zcard.handleZcard(e, a)],
   ['ZSCORE', (e, a) => zscore.handleZscore(e, a)],
+  ['ZMSCORE', (e, a) => zmscore.handleZmscore(e, a)],
+  ['ZMPOP', (e, a) => zmpop.handleZmpop(e, a)],
   ['ZRANGE', (e, a) => zrange.handleZrange(e, a)],
   ['ZRANGEBYSCORE', (e, a) => zrangebyscore.handleZrangebyscore(e, a)],
   ['ZREVRANGE', (e, a) => zrevrange.handleZrevrange(e, a)],

@@ -34,6 +34,7 @@ describe('Engine sorted-set cache', () => {
     assert.deepEqual(engine.zrange('zset', 0, 1).map(String), ['a', 'b']);
     assert.deepEqual(engine.zrevrange('zset', 0, 1, { withScores: true }).map(String), ['d', '3', 'c', '2']);
     assert.equal(engine.zscore('zset', 'b'), '2');
+    assert.deepEqual(engine.zmscore('zset', ['a', 'missing', 'd']), ['1', null, '3']);
     assert.equal(engine.zrank('zset', 'c'), 2);
     assert.equal(engine.zrevrank('zset', 'c'), 1);
     assert.equal(engine.zcard('zset'), 4);
@@ -46,7 +47,7 @@ describe('Engine sorted-set cache', () => {
       engine.zrevrangebyscore('zset', 3, 2, { offset: 1, limit: 2 }).map(String),
       ['c', 'b']
     );
-    assert.equal(cache.stats.hits, 9);
+    assert.equal(cache.stats.hits, 10);
     db.close();
   });
 
@@ -99,6 +100,20 @@ describe('Engine sorted-set cache', () => {
     engine.zremrangebyscore('zset', 4, 4);
     assert.equal(cache.stats.entries, 0);
     assert.deepEqual(engine.zrange('zset', 0, -1, { withScores: true }).map(String), ['b', '3', 'd', '3']);
+    db.close();
+  });
+
+  it('ZMPOP selects keys in order and invalidates the popped zset cache', () => {
+    const { db, cache, engine } = cachedEngine();
+    seed(engine, 'second');
+    engine.zrange('second', 0, -1);
+    assert.equal(cache.stats.entries, 1);
+
+    const result = engine.zmpop(['first', 'second'], 'MAX', 2);
+    assert.equal(result[0].toString(), 'second');
+    assert.deepEqual(result[1].map((entry) => entry.map(String)), [['d', '3'], ['c', '2']]);
+    assert.equal(cache.stats.entries, 0);
+    assert.deepEqual(engine.zrange('second', 0, -1).map(String), ['a', 'b']);
     db.close();
   });
 

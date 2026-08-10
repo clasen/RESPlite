@@ -13,6 +13,7 @@
 * `RPUSH key value [value ...]`
 * `LPOP key [count]`
 * `RPOP key [count]`
+* `LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]`
 * `LLEN key`
 * `LRANGE key start stop`
 * `LINDEX key index` (optional, recommended)
@@ -34,6 +35,8 @@
   * `LLEN` returns `0`
   * `LRANGE` returns empty array
   * `LPOP/RPOP` returns `nil` (or empty array for count > 1)
+  * `LMPOP` returns `nil` when all requested keys are absent
+* **Multi-key pop:** `LMPOP` checks keys in request order and removes up to `COUNT` values from the first non-empty list.
 * **Empty list after removals:** When a list becomes empty, delete the logical key:
 
   * delete metadata from `redis_keys`

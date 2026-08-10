@@ -158,6 +158,20 @@ describe('Engine list cache', () => {
     db.close();
   });
 
+  it('LMPOP selects keys in order and invalidates the popped list cache', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.rpush('second', 'a', 'b', 'c');
+    engine.lrange('second', 0, -1);
+    assert.equal(cache.stats.entries, 1);
+
+    const result = engine.lmpop(['first', 'second'], 'RIGHT', 2);
+    assert.equal(result[0].toString(), 'second');
+    assert.deepEqual(result[1].map(String), ['c', 'b']);
+    assert.equal(cache.stats.entries, 0);
+    assert.deepEqual(engine.lrange('second', 0, -1).map(String), ['a']);
+    db.close();
+  });
+
   it('does not cache lists above their item or byte limit', () => {
     const byItems = cachedEngine({ cacheOptions: { maxListItems: 1 } });
     byItems.engine.rpush('list', 'a', 'b');

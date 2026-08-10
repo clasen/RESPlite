@@ -338,16 +338,22 @@ export function createEngine(opts = {}) {
     },
 
     mset(pairs) {
-      const entries = [];
+      const entriesByKey = new Map();
       for (let i = 0; i < pairs.length; i += 2) {
         const k = asKey(pairs[i]);
-        const existingMeta = getKeyMeta(k);
-        entries.push({
-          key: k,
-          value: asValue(pairs[i + 1]),
-          options: { existingMeta },
-        });
+        const mapKey = cacheKey(k);
+        const existingEntry = entriesByKey.get(mapKey);
+        if (existingEntry) {
+          existingEntry.value = asValue(pairs[i + 1]);
+        } else {
+          entriesByKey.set(mapKey, {
+            key: k,
+            value: asValue(pairs[i + 1]),
+            options: { existingMeta: getKeyMeta(k) },
+          });
+        }
       }
+      const entries = Array.from(entriesByKey.values());
       strings.setMultiple(entries);
       for (const entry of entries) {
         const { existingMeta } = entry.options;
@@ -356,6 +362,31 @@ export function createEngine(opts = {}) {
           expiresAt: null,
         });
       }
+    },
+
+    msetnx(pairs) {
+      const entriesByKey = new Map();
+      for (let i = 0; i < pairs.length; i += 2) {
+        const key = asKey(pairs[i]);
+        entriesByKey.set(cacheKey(key), {
+          key,
+          value: asValue(pairs[i + 1]),
+          options: { existingMeta: null },
+        });
+      }
+      const entries = Array.from(entriesByKey.values());
+      const written = runInTransaction(db, () => {
+        for (const entry of entries) {
+          if (getKeyMeta(entry.key)) return false;
+        }
+        strings.setMultiple(entries);
+        return true;
+      });
+      if (!written) return 0;
+      for (const entry of entries) {
+        cacheString(entry.key, entry.value, { version: 1, expiresAt: null });
+      }
+      return 1;
     },
 
     mget(keysList) {
@@ -636,6 +667,19 @@ export function createEngine(opts = {}) {
       return sets.has(k, asKey(member)) ? 1 : 0;
     },
 
+    smismember(key, members) {
+      const k = asKey(key);
+      const memberBuffers = members.map((member) => asKey(member));
+      const cached = readCachedCollection(k, 'set');
+      if (cached !== CACHE_MISS) {
+        return memberBuffers.map((member) => cached && cached.has(cacheKey(member)) ? 1 : 0);
+      }
+      const meta = getKeyMeta(k);
+      if (!meta) return members.map(() => 0);
+      expectSet(meta);
+      return memberBuffers.map((member) => sets.has(k, member) ? 1 : 0);
+    },
+
     scard(key) {
       const k = asKey(key);
       const cached = readCachedCollection(k, 'set');
@@ -743,6 +787,23 @@ export function createEngine(opts = {}) {
       return popped;
     },
 
+    lmpop(keysToCheck, direction, count) {
+      return runInTransaction(db, () => {
+        for (const key of keysToCheck) {
+          const k = asKey(key);
+          const meta = getKeyMeta(k);
+          if (!meta) continue;
+          expectList(meta);
+          const values = direction === 'LEFT'
+            ? lists.lpop(k, count)
+            : lists.rpop(k, count);
+          invalidateCachedKey(k);
+          if (values.length > 0) return [k, values];
+        }
+        return null;
+      });
+    },
+
     lrem(key, count, element) {
       const k = asKey(key);
       const meta = getKeyMeta(key);
@@ -828,6 +889,44 @@ export function createEngine(opts = {}) {
       if (!meta) return null;
       expectZset(meta);
       return zsets.score(k, asKey(member));
+    },
+
+    zmscore(key, members) {
+      const k = asKey(key);
+      const memberBuffers = members.map((member) => asKey(member));
+      const cached = readCachedCollection(k, 'zset');
+      if (cached !== CACHE_MISS) {
+        return memberBuffers.map((member) => cached?.get(cacheKey(member))?.[1] ?? null);
+      }
+      const meta = getKeyMeta(k);
+      if (!meta) return members.map(() => null);
+      expectZset(meta);
+      return memberBuffers.map((member) => zsets.score(k, member));
+    },
+
+    zmpop(keysToCheck, direction, count) {
+      return runInTransaction(db, () => {
+        for (const key of keysToCheck) {
+          const k = asKey(key);
+          const meta = getKeyMeta(k);
+          if (!meta) continue;
+          expectZset(meta);
+          const flat = direction === 'MIN'
+            ? zsets.rangeByRank(k, 0, count - 1, { withScores: true })
+            : zsets.rangeByRankReverse(k, 0, count - 1, { withScores: true });
+          if (flat.length === 0) continue;
+          const members = [];
+          const entries = [];
+          for (let i = 0; i < flat.length; i += 2) {
+            members.push(flat[i]);
+            entries.push([flat[i], flat[i + 1]]);
+          }
+          zsets.remove(k, members);
+          invalidateCachedKey(k);
+          return [k, entries];
+        }
+        return null;
+      });
     },
 
     zrange(key, start, stop, options = {}) {

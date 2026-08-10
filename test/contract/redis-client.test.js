@@ -36,6 +36,26 @@ describe('redis client compatibility', () => {
     assert.equal(arr[1], null);
   });
 
+  it('supports multi-value commands through the redis client API', async () => {
+    assert.equal(await client.mSetNX({ 'contract:nx:1': 'v1', 'contract:nx:2': 'v2' }), true);
+    assert.equal(await client.mSetNX({ 'contract:nx:3': 'v3', 'contract:nx:1': 'changed' }), false);
+
+    await client.sAdd('contract:set', ['a', 'b']);
+    assert.deepEqual(await client.smIsMember('contract:set', ['a', 'missing', 'b']), [true, false, true]);
+
+    await client.zAdd('contract:zscore', [{ score: 1, value: 'a' }, { score: 2, value: 'b' }]);
+    assert.deepEqual(await client.zmScore('contract:zscore', ['a', 'missing', 'b']), [1, null, 2]);
+
+    await client.rPush('contract:list', ['a', 'b', 'c']);
+    assert.deepEqual(await client.lmPop('contract:list', 'LEFT', { COUNT: 2 }), ['contract:list', ['a', 'b']]);
+
+    await client.zAdd('contract:zpop', [{ score: 1, value: 'a' }, { score: 2, value: 'b' }]);
+    assert.deepEqual(await client.zmPop('contract:zpop', 'MAX', { COUNT: 2 }), {
+      key: 'contract:zpop',
+      elements: [{ value: 'b', score: 2 }, { value: 'a', score: 1 }],
+    });
+  });
+
   it('HLEN returns field count', async () => {
     await client.hSet('hlen:c1', { f1: 'v1', f2: 'v2', f3: 'v3' });
     const n = await client.hLen('hlen:c1');

@@ -17,6 +17,21 @@ function infoObject(reply) {
 }
 
 describe('createRESPlite', () => {
+  it('removes its graceful-shutdown listeners when closed', async () => {
+    const initialSigtermListeners = process.listenerCount('SIGTERM');
+    const initialSigintListeners = process.listenerCount('SIGINT');
+    const srv = await createRESPlite();
+    try {
+      assert.equal(process.listenerCount('SIGTERM'), initialSigtermListeners + 1);
+      assert.equal(process.listenerCount('SIGINT'), initialSigintListeners + 1);
+    } finally {
+      await srv.close();
+    }
+    await srv.close();
+    assert.equal(process.listenerCount('SIGTERM'), initialSigtermListeners);
+    assert.equal(process.listenerCount('SIGINT'), initialSigintListeners);
+  });
+
   it('returns a numeric port and a close function', async () => {
     const srv = await createRESPlite();
     assert.equal(typeof srv.port, 'number');

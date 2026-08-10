@@ -57,10 +57,11 @@ describe('Engine set cache', () => {
     assert.deepEqual(engine.smembers('set').map((v) => v.toString()), ['a', 'b', 'c']);
     assert.equal(engine.sismember('set', 'b'), 1);
     assert.equal(engine.sismember('set', 'missing'), 0);
+    assert.deepEqual(engine.smismember('set', ['a', 'missing', 'c']), [1, 0, 1]);
     assert.equal(engine.scard('set'), 3);
     const random = engine.srandmember('set');
     assert.ok(['a', 'b', 'c'].includes(random.toString()));
-    assert.equal(cache.stats.hits, 5);
+    assert.equal(cache.stats.hits, 6);
     db.close();
   });
 

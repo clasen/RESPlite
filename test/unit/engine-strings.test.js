@@ -102,6 +102,26 @@ describe('Engine string cache', () => {
     db.close();
   });
 
+  it('keeps MSETNX atomic, cache-coherent and aware of expired keys', () => {
+    let now = 1_000;
+    const { db, cache, engine } = cachedEngine({ clock: () => now });
+    engine.set('expires', 'old', { px: 100 });
+    engine.set('occupied', 'original');
+
+    assert.equal(engine.msetnx(['blocked', 'value', 'occupied', 'changed']), 0);
+    assert.equal(engine.get('blocked'), null);
+    assert.equal(engine.get('occupied').toString(), 'original');
+
+    now += 101;
+    assert.equal(engine.msetnx(['expires', 'new', 'available', 'value']), 1);
+    assert.deepEqual(
+      engine.mget(['expires', 'available']).map((value) => value?.toString() ?? null),
+      ['new', 'value']
+    );
+    assert.ok(cache.stats.hits >= 2);
+    db.close();
+  });
+
   it('invalidates cached strings on DEL, TTL changes, expiry and PERSIST', () => {
     let now = 1_000;
     const { db, cache, engine } = cachedEngine({ clock: () => now });
@@ -154,6 +174,17 @@ describe('Engine string cache', () => {
 
     const values = engine.mget(['string', 'hash', 'missing']);
     assert.deepEqual(values.map((v) => v?.toString() ?? null), ['old', null, null]);
+    db.close();
+  });
+
+  it('uses the last value when MSET or MSETNX repeats an absent key', () => {
+    const { db, engine } = cachedEngine();
+
+    engine.mset(['mset:duplicate', 'first', 'mset:duplicate', 'last']);
+    assert.equal(engine.get('mset:duplicate').toString(), 'last');
+
+    assert.equal(engine.msetnx(['msetnx:duplicate', 'first', 'msetnx:duplicate', 'last']), 1);
+    assert.equal(engine.get('msetnx:duplicate').toString(), 'last');
     db.close();
   });
 });
