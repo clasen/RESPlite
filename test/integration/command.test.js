@@ -59,6 +59,16 @@ describe('COMMAND integration', () => {
     assert.strictEqual(getDoc[1], 2, 'GET arity 2');
   });
 
+  it('COMMAND INFO reports Pub/Sub arity and flags', async () => {
+    const reply = await sendCommand(port, argv('COMMAND', 'INFO', 'PUBLISH', 'SUBSCRIBE', 'PUBSUB'));
+    const docs = tryParseValue(reply, 0).value;
+    assert.deepEqual(docs.map((doc) => doc[1]), [3, -2, -2]);
+    for (const doc of docs) {
+      assert.deepEqual(doc[2].map((flag) => flag.toString('utf8')), ['pubsub']);
+      assert.deepEqual(doc.slice(3, 6), [0, 0, 0]);
+    }
+  });
+
   it('COMMAND INFO unknown returns empty array', async () => {
     const reply = await sendCommand(port, argv('COMMAND', 'INFO', 'NOSUCHCOMMAND'));
     const v = tryParseValue(reply, 0).value;

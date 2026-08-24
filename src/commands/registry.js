@@ -95,11 +95,17 @@ import * as ftSugdel from './ft-sugdel.js';
 import * as monitor from './monitor.js';
 import * as client from './client.js';
 import * as command from './command.js';
+import * as publish from './publish.js';
+import * as subscribe from './subscribe.js';
+import * as unsubscribe from './unsubscribe.js';
+import * as psubscribe from './psubscribe.js';
+import * as punsubscribe from './punsubscribe.js';
+import * as pubsub from './pubsub.js';
 
 const COMPILED_POLICY_TAG = Symbol('compiled-command-policy');
 
 const HANDLERS = new Map([
-  ['PING', (e, a) => ping.handlePing()],
+  ['PING', (e, a, ctx) => ping.handlePing(a, ctx)],
   ['ECHO', (e, a) => echo.handleEcho(a)],
   ['QUIT', (e, a) => quit.handleQuit()],
   ['GET', (e, a) => get.handleGet(e, a)],
@@ -191,6 +197,12 @@ const HANDLERS = new Map([
   ['MONITOR', (e, a, ctx) => monitor.handleMonitor(a, ctx)],
   ['CLIENT', (e, a, ctx) => client.handleClient(e, a, ctx)],
   ['COMMAND', (e, a, ctx) => command.handleCommand(e, a, ctx)],
+  ['PUBLISH', (e, a, ctx) => publish.handlePublish(a, ctx)],
+  ['SUBSCRIBE', (e, a, ctx) => subscribe.handleSubscribe(a, ctx)],
+  ['UNSUBSCRIBE', (e, a, ctx) => unsubscribe.handleUnsubscribe(a, ctx)],
+  ['PSUBSCRIBE', (e, a, ctx) => psubscribe.handlePsubscribe(a, ctx)],
+  ['PUNSUBSCRIBE', (e, a, ctx) => punsubscribe.handlePunsubscribe(a, ctx)],
+  ['PUBSUB', (e, a, ctx) => pubsub.handlePubsub(a, ctx)],
 ]);
 
 function assertCommandName(value, field) {
@@ -281,12 +293,18 @@ function resolveIncomingCommand(inputCommand, policy) {
   return { blocked: false, resolvedCommand: inputCommand };
 }
 
+export function resolveCommandName(inputCommand, policy = null) {
+  const normalized = String(inputCommand).toUpperCase();
+  const resolution = resolveIncomingCommand(normalized, compileCommandPolicy(policy));
+  return resolution.blocked ? null : resolution.resolvedCommand;
+}
+
 /**
  * Dispatch command. Full argv: [commandNameBuf, ...argBuffers].
  * @param {object} engine
  * @param {Buffer[]} argv - first element is command name, rest are arguments
  * @param {object} [context] - optional connection context (connectionId, clientAddress, writeResponse, onUnknownCommand, onCommandError)
- * @returns {{ result: unknown } | { error: string } | { quit: true } | { block: object }}
+ * @returns {{ result: unknown } | { error: string } | { quit: true } | { block: object } | { pushes: unknown[] }}
  */
 export function dispatch(engine, argv, context) {
   if (!argv || argv.length === 0) {
@@ -329,6 +347,7 @@ export function dispatch(engine, argv, context) {
   try {
     const result = handler(engine, args, context);
     if (result && result.quit) return result;
+    if (result && result.pushes) return result;
     if (result && result.error) {
       context?.onCommandError?.({
         command: cmd,

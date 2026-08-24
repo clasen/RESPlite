@@ -78,15 +78,29 @@ Supported as project-specific commands:
 These are not Redis-standard commands.
 They exist for observability and operational insight.
 
+### 6.8 Pub/Sub commands
+
+Supported:
+
+- `PUBLISH channel message`
+- `SUBSCRIBE channel [channel ...]`
+- `UNSUBSCRIBE [channel ...]`
+- `PSUBSCRIBE pattern [pattern ...]`
+- `PUNSUBSCRIBE [pattern ...]`
+- `PUBSUB CHANNELS [pattern]`
+- `PUBSUB NUMSUB [channel ...]`
+- `PUBSUB NUMPAT`
+
+Pub/Sub uses RESP2 push-style array replies and at-most-once delivery. Channels, patterns, and messages are binary-safe. Subscription state is held in memory by one RESPLite server instance and is independent of SQLite and the keyspace; it is not persisted or shared by separate processes opening the same database.
+
+While a RESP2 connection has active channel or pattern subscriptions, it accepts only `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PING`, and `QUIT`. Direct and pattern matches are separate deliveries and each contributes to the integer returned by `PUBLISH`. `PUBSUB NUMPAT` reports the number of unique active patterns, while `PUBLISH` counts delivery to every matching subscribed client.
+
 ---
 
 ## 7. Commands Explicitly Not Supported in v1
 
 The following commands are out of scope in v1 and should return a clear unsupported-command error:
 
-- `SUBSCRIBE`
-- `PUBLISH`
-- `PSUBSCRIBE`
 - `MULTI`
 - `EXEC`
 - `WATCH`

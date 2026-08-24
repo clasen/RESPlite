@@ -20,4 +20,9 @@ describe('PING integration', () => {
     const reply = await sendCommand(port, argv('PING'));
     assert.equal(reply.toString('utf8'), '+PONG\r\n');
   });
+
+  it('PING echoes an optional message', async () => {
+    const reply = await sendCommand(port, argv('PING', 'hello'));
+    assert.equal(reply.toString('utf8'), '$5\r\nhello\r\n');
+  });
 });

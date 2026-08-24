@@ -3,19 +3,23 @@
  */
 
 import { RESPReader } from '../resp/parser.js';
-import { compileCommandPolicy, dispatch } from '../commands/registry.js';
+import { compileCommandPolicy, dispatch, resolveCommandName } from '../commands/registry.js';
 import { encode, encodeSimpleString, encodeError } from '../resp/encoder.js';
 import { registerMonitorClient, unregisterMonitorClient, broadcastMonitorCommand } from './monitor.js';
 
 let nextConnectionId = 0;
+const PUBSUB_MODE_COMMANDS = new Set([
+  'PING', 'QUIT', 'SUBSCRIBE', 'UNSUBSCRIBE', 'PSUBSCRIBE', 'PUNSUBSCRIBE',
+]);
 
 /**
  * @param {import('net').Socket} socket
  * @param {object} engine
  * @param {object} [hooks] Optional: onUnknownCommand, onCommandError, onSocketError
  * @param {object|null} [commandPolicy] Optional: command rename/disable policy.
+ * @param {{ pubSub?: object }} [services] Shared connection services for this server instance.
  */
-export function handleConnection(socket, engine, hooks = {}, commandPolicy = null) {
+export function handleConnection(socket, engine, hooks = {}, commandPolicy = null, services = {}) {
   const reader = new RESPReader();
   const connectionId = ++nextConnectionId;
   const clientAddress = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 0}`;
@@ -25,8 +29,16 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
     clientAddress,
     connectionName: null,
     monitorMode: false,
+    pubSubMode: false,
+    pubSub: services.pubSub ?? null,
     writeResponse(buf) {
       if (socket.writable) socket.write(buf);
+    },
+    writePubSub(value) {
+      if (!socket.writable) return false;
+      const accepted = socket.write(encode(value));
+      if (!accepted) socket.destroy();
+      return accepted;
     },
     onUnknownCommand: hooks.onUnknownCommand,
     onCommandError: hooks.onCommandError,
@@ -39,6 +51,13 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
       socket.write(encodeSimpleString('OK'));
       socket.end();
       return true;
+    }
+    if (out.pushes) {
+      for (const push of out.pushes) {
+        if (!socket.writable) return true;
+        socket.write(encode(push));
+      }
+      return false;
     }
     let buf;
     if (out.error) {
@@ -59,12 +78,19 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
     const commands = reader.parseCommands();
     for (const argv of commands) {
       const cmd = argv[0] ? argv[0].toString('utf8').toUpperCase() : '';
-      if (context.monitorMode && cmd !== 'QUIT') {
+      const resolvedCommand = resolveCommandName(cmd, compiledCommandPolicy);
+      if (context.monitorMode && resolvedCommand !== 'QUIT') {
         socket.write(encodeError('ERR MONITOR mode only supports QUIT'));
         continue;
       }
+      if (context.pubSubMode && !PUBSUB_MODE_COMMANDS.has(resolvedCommand)) {
+        socket.write(encodeError(
+          `ERR Can't execute '${cmd.toLowerCase()}': only SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PING and QUIT are allowed in this context`
+        ));
+        continue;
+      }
       const out = dispatch(engine, argv, context);
-      if (cmd === 'MONITOR' && !out.error) {
+      if (resolvedCommand === 'MONITOR' && !out.error) {
         context.monitorMode = true;
         registerMonitorClient(context);
       } else if (!context.monitorMode) {
@@ -100,6 +126,7 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
 
   socket.on('close', () => {
     if (engine._blockingManager) engine._blockingManager.cancel(connectionId);
+    context.pubSub?.disconnect(connectionId);
     unregisterMonitorClient(connectionId);
   });
 

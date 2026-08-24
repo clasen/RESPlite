@@ -51,6 +51,25 @@ describe('createRESPlite', () => {
     await srv.close();
   });
 
+  it('shares Pub/Sub across embedded client connections', async () => {
+    const srv = await createRESPlite();
+    const publisher = await redisClient(srv.port);
+    const subscriber = publisher.duplicate();
+    await subscriber.connect();
+    const messages = [];
+    try {
+      await subscriber.subscribe('embedded:events', (message) => messages.push(message));
+      assert.equal(await publisher.publish('embedded:events', 'hello'), 1);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(messages, ['hello']);
+      await subscriber.unsubscribe('embedded:events');
+    } finally {
+      await subscriber.quit();
+      await publisher.quit();
+      await srv.close();
+    }
+  });
+
   it('enables the hot string cache by default and allows disabling it', async () => {
     const srv = await createRESPlite();
     const client = await redisClient(srv.port);
@@ -218,7 +237,7 @@ describe('createRESPlite', () => {
     const srv = await createRESPlite();
     const client = await redisClient(srv.port);
     try {
-      await client.sendCommand(['SUBSCRIBE', 'ch']);
+      await client.sendCommand(['EVAL', 'return 1', '0']);
       assert.fail('expected error');
     } catch (e) {
       assert.ok(e.message.includes('not supported'), e.message);
@@ -238,22 +257,22 @@ describe('createRESPlite', () => {
     });
     const client = await redisClient(srv.port);
     try {
-      await client.sendCommand(['SUBSCRIBE', 'ch']);
+      await client.sendCommand(['EVAL', 'return 1', '0']);
     } catch (_) {}
     try {
-      await client.sendCommand(['PUBLISH', 'ch', 'x']);
+      await client.sendCommand(['XADD', 'stream', '*', 'field', 'value']);
     } catch (_) {}
     await client.quit();
     await srv.close();
     const commands = unknownCalls.map((c) => c.command);
-    assert.ok(commands.includes('SUBSCRIBE'), 'expected SUBSCRIBE in ' + commands.join(', '));
-    assert.ok(commands.includes('PUBLISH'), 'expected PUBLISH in ' + commands.join(', '));
-    const sub = unknownCalls.find((c) => c.command === 'SUBSCRIBE');
-    const pub = unknownCalls.find((c) => c.command === 'PUBLISH');
-    assert.equal(sub.argsCount, 1);
-    assert.equal(pub.argsCount, 2);
-    assert.equal(typeof sub.connectionId, 'number');
-    assert.ok(sub.clientAddress.length > 0);
+    assert.ok(commands.includes('EVAL'), 'expected EVAL in ' + commands.join(', '));
+    assert.ok(commands.includes('XADD'), 'expected XADD in ' + commands.join(', '));
+    const evalCall = unknownCalls.find((c) => c.command === 'EVAL');
+    const xaddCall = unknownCalls.find((c) => c.command === 'XADD');
+    assert.equal(evalCall.argsCount, 2);
+    assert.equal(xaddCall.argsCount, 4);
+    assert.equal(typeof evalCall.connectionId, 'number');
+    assert.ok(evalCall.clientAddress.length > 0);
   });
 
   it('onUnknownCommand hook is also called for disabled commands', async () => {

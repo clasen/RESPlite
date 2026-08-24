@@ -41,7 +41,6 @@ There is no embedded direct JavaScript API in the initial scope.
 
 The following are explicitly out of scope for v1:
 
-- Pub/Sub
 - Streams
 - Lua scripting
 - Redis Cluster

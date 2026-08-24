@@ -52,7 +52,6 @@ Future near-term commands or features as documented in the respective spec files
 
 Features explicitly excluded from the roadmap for now, such as:
 
-- Pub/Sub
 - Streams
 - Lua
 - Cluster

@@ -96,7 +96,7 @@ The hot string and small-collection cache is enabled by default with the limits 
 
 Available hooks:
 
-- `onUnknownCommand`: client sent a command not implemented by RESPLite, such as `SUBSCRIBE` or `PUBLISH`. Payload includes `argv` (full command line as strings, e.g. `['CLIENT','LIST']`) so you can log exactly what was sent.
+- `onUnknownCommand`: client sent a command not implemented by RESPLite, such as `EVAL` or `XADD`. Payload includes `argv` (full command line as strings, e.g. `['CLIENT','LIST']`) so you can log exactly what was sent.
 - `onCommandError`: a command failed because of wrong type, invalid args, or a handler error. Payload includes `argv` for the full command line.
 - `onSocketError`: the connection socket emitted an error, for example `ECONNRESET`.
 
@@ -330,6 +330,26 @@ console.log(await client.exists('k1'));        // → 1
 await client.del('k1');
 console.log(await client.exists('k1'));        // → 0
 ```
+
+### Pub/Sub
+
+Use a duplicated client because a RESP2 connection enters subscriber mode after `SUBSCRIBE` or `PSUBSCRIBE`:
+
+```javascript
+const subscriber = client.duplicate();
+await subscriber.connect();
+
+await subscriber.subscribe('events:orders', (message, channel) => {
+  console.log(channel, message);
+});
+
+console.log(await client.publish('events:orders', 'order-42')); // → 1
+
+await subscriber.unsubscribe('events:orders');
+await subscriber.quit();
+```
+
+RESPLite also supports pattern subscriptions through `pSubscribe()` and the `PUBSUB CHANNELS`, `PUBSUB NUMSUB`, and `PUBSUB NUMPAT` introspection commands. Pub/Sub state is ephemeral and belongs to one running RESPLite server instance: messages are not stored in SQLite, offline subscribers miss them, and separate server processes that open the same database do not share subscriptions.
 
 ### Hashes
 
@@ -675,6 +695,24 @@ The report includes hot and uncached reads for strings, hashes, sets, lists, and
 npm run benchmark -- --template default --compare-caches --cache-only --resplite-only
 ```
 
+### Pub/Sub benchmark
+
+Run the dedicated Pub/Sub comparison with:
+
+```bash
+npm run benchmark:pubsub
+```
+
+The default matrix measures direct-channel and pattern delivery with 1, 10, and 100 subscribers, plus a zero-subscriber `PUBLISH` baseline, using 64-byte and 1-KiB payloads. Connection setup, subscription acknowledgements, and a 100-publication warmup are excluded from the measured interval. The report includes publications per second, delivered messages per second, and end-to-end delivery latency at p50, p95, and p99.
+
+Use smaller settings for a quick local run:
+
+```bash
+npm run benchmark:pubsub -- --iterations 100 --warmup 10 --subscribers 0,1,10 --message-sizes 64
+```
+
+Redis must be listening on port 6379 unless `--redis-port` is provided. To measure only RESPLite, use `--resplite-only`. The benchmark starts one isolated RESPLite process with an in-memory database because Pub/Sub messages and subscriptions are ephemeral; select its PRAGMA template with `--template` if needed.
+
 ## Compatibility matrix
 
 ### Supported (v1)
@@ -689,12 +727,12 @@ npm run benchmark -- --template default --compare-caches --cache-only --resplite
 | **Lists** | LPUSH, RPUSH, LLEN, LRANGE, LINDEX, LPOP, RPOP, LMPOP, LSET, LTRIM, BLPOP, BRPOP |
 | **Sorted sets** | ZADD, ZREM, ZCARD, ZSCORE, ZMSCORE, ZMPOP, ZRANGE, ZREVRANGE, ZRANGEBYSCORE, ZREVRANGEBYSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY, ZREMRANGEBYRANK, ZREMRANGEBYSCORE |
 | **Search (FT.\*)** | FT.CREATE, FT.INFO, FT.ADD, FT.DEL, FT.GET, FT.SEARCH, FT.SUGADD, FT.SUGGET, FT.SUGDEL |
+| **Pub/Sub** | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB CHANNELS, PUBSUB NUMSUB, PUBSUB NUMPAT |
 | **Introspection** | TYPE, OBJECT IDLETIME, SCAN, KEYS, RENAME, MONITOR |
 | **Admin** | SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
 
 ### Not supported (v1)
 
-- Pub/Sub (SUBSCRIBE, PUBLISH, etc.)
 - Streams (XADD, XRANGE, etc.)
 - Lua (EVAL, EVALSHA)
 - Transactions (MULTI, EXEC, WATCH)

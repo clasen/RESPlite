@@ -20,12 +20,20 @@ describe('redis client compatibility', () => {
     await s.closeAsync();
   });
 
-  it('unsupported command returns error', async () => {
+  it('supports Pub/Sub through a duplicated redis client connection', async () => {
+    const subscriber = client.duplicate();
+    await subscriber.connect();
+    const messages = [];
     try {
-      await client.sendCommand(['SUBSCRIBE', 'ch']);
-      assert.fail('expected error');
-    } catch (e) {
-      assert.ok(e.message.includes('not supported') || (e.message && e.message.length > 0));
+      await subscriber.subscribe('contract:events', (message, channel) => {
+        messages.push({ message, channel });
+      });
+      assert.equal(await client.publish('contract:events', 'hello'), 1);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(messages, [{ message: 'hello', channel: 'contract:events' }]);
+      await subscriber.unsubscribe('contract:events');
+    } finally {
+      await subscriber.quit();
     }
   });
 

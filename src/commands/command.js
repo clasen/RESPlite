@@ -10,6 +10,10 @@ const WRITE_COMMANDS = new Set([
   'FT.CREATE', 'FT.ADD', 'FT.DEL', 'FT.SUGADD', 'FT.SUGDEL', 'CLIENT',
 ]);
 
+const PUBSUB_COMMANDS = new Set([
+  'PUBLISH', 'SUBSCRIBE', 'UNSUBSCRIBE', 'PSUBSCRIBE', 'PUNSUBSCRIBE', 'PUBSUB',
+]);
+
 /**
  * Build Redis-style command doc: [name, arity, flags, firstKey, lastKey, step, acl_categories].
  * @param {string} name - Command name (lowercase for reply).
@@ -17,17 +21,27 @@ const WRITE_COMMANDS = new Set([
  */
 function docFor(name, canonicalName = name) {
   const lower = name.toLowerCase();
-  const flags = WRITE_COMMANDS.has(canonicalName) ? ['write', 'fast'] : ['readonly', 'fast'];
+  const flags = PUBSUB_COMMANDS.has(canonicalName)
+    ? ['pubsub']
+    : WRITE_COMMANDS.has(canonicalName) ? ['write', 'fast'] : ['readonly', 'fast'];
   let arity = 2;
   let firstKey = 1;
   let lastKey = 1;
   let step = 1;
-  if (['MGET', 'MSET', 'DEL', 'UNLINK', 'EXISTS', 'KEYS', 'SCAN', 'PING', 'ECHO', 'QUIT', 'TYPE', 'OBJECT', 'SQLITE.INFO', 'CACHE.INFO', 'MEMORY.INFO', 'COMMAND', 'MONITOR', 'CLIENT'].includes(canonicalName)) {
+  if (PUBSUB_COMMANDS.has(canonicalName)) {
+    firstKey = 0;
+    lastKey = 0;
+    step = 0;
+    if (canonicalName === 'PUBLISH') arity = 3;
+    else if (canonicalName === 'SUBSCRIBE' || canonicalName === 'PSUBSCRIBE') arity = -2;
+    else if (canonicalName === 'PUBSUB') arity = -2;
+    else arity = -1;
+  } else if (['MGET', 'MSET', 'DEL', 'UNLINK', 'EXISTS', 'KEYS', 'SCAN', 'PING', 'ECHO', 'QUIT', 'TYPE', 'OBJECT', 'SQLITE.INFO', 'CACHE.INFO', 'MEMORY.INFO', 'COMMAND', 'MONITOR', 'CLIENT'].includes(canonicalName)) {
     if (['PING', 'ECHO', 'QUIT', 'COMMAND', 'MONITOR'].includes(canonicalName)) {
       firstKey = 0;
       lastKey = 0;
       step = 0;
-      arity = canonicalName === 'COMMAND' ? -1 : (canonicalName === 'ECHO' ? 2 : 1);
+      arity = canonicalName === 'COMMAND' || canonicalName === 'PING' ? -1 : (canonicalName === 'ECHO' ? 2 : 1);
     } else if (['MGET', 'EXISTS', 'KEYS', 'SCAN'].includes(canonicalName)) {
       arity = -2;
       lastKey = -1;

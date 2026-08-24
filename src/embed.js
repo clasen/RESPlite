@@ -6,7 +6,9 @@
  *   const srv = await createRESPlite({ db: './my-app.db' });
  *
  * Low-level (manual wiring):
- *   import { handleConnection, createEngine, openDb } from 'resplite/embed';
+ *   import { handleConnection, createEngine, createPubSubBroker, openDb } from 'resplite/embed';
+ *   const pubSub = createPubSubBroker(); // share across every connection of this server
+ *   handleConnection(socket, engine, hooks, commandPolicy, { pubSub });
  */
 
 import net from 'node:net';
@@ -15,8 +17,9 @@ import { createEngine } from './engine/engine.js';
 import { createCache } from './cache/cache.js';
 import { openDb } from './storage/sqlite/db.js';
 import { compileCommandPolicy } from './commands/registry.js';
+import { createPubSubBroker } from './pubsub/broker.js';
 
-export { handleConnection, createEngine, openDb };
+export { handleConnection, createEngine, openDb, createPubSubBroker };
 
 /**
  * Optional event hooks for observability (e.g. logging unknown commands or errors).
@@ -60,12 +63,13 @@ export async function createRESPlite({
     ? createCache({ enabled: false })
     : createCache({ enabled: true, ...(cacheOptions ?? {}) });
   const engine = createEngine({ db, cache });
+  const pubSub = createPubSubBroker();
   const connections = new Set();
 
   const server = net.createServer((socket) => {
     connections.add(socket);
     socket.once('close', () => connections.delete(socket));
-    handleConnection(socket, engine, hooks, compiledCommandPolicy);
+    handleConnection(socket, engine, hooks, compiledCommandPolicy, { pubSub });
   });
   await new Promise((resolve) => server.listen(port, host, resolve));
 
