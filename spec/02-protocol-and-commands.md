@@ -21,6 +21,7 @@ Supported:
 - `MSET`
 - `MSETNX`
 - `DEL`
+- `UNLINK`
 - `EXISTS`
 - `INCR`
 - `DECR`
@@ -68,7 +69,17 @@ Supported:
 - `OBJECT IDLETIME` (seconds since last write; uses `updated_at`; missing key returns nil)
 - `SCAN`
 
-### 6.7 Administrative extension commands
+### 6.7 Database commands
+
+Supported:
+
+- `DBSIZE`
+- `FLUSHDB [ASYNC | SYNC]`
+- `FLUSHALL [ASYNC | SYNC]`
+
+RESPlite exposes one logical database, so `FLUSHDB` and `FLUSHALL` are equivalent. The `SYNC` and `ASYNC` modifiers are accepted for client compatibility; both execute synchronously on SQLite. A flush removes the keyspace and all `FT.*` data while preserving internal migration bookkeeping.
+
+### 6.8 Administrative extension commands
 
 Supported as project-specific commands:
 
@@ -78,7 +89,7 @@ Supported as project-specific commands:
 These are not Redis-standard commands.
 They exist for observability and operational insight.
 
-### 6.8 Pub/Sub commands
+### 6.9 Pub/Sub commands
 
 Supported:
 

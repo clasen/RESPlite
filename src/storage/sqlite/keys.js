@@ -38,8 +38,24 @@ export function createKeysStorage(db) {
   );
   const incrZsetCountOnly = db.prepare('UPDATE redis_keys SET zset_count = COALESCE(zset_count, 0) + ? WHERE key = ?');
   const deleteByKey = db.prepare('DELETE FROM redis_keys WHERE key = ?');
+  const deleteAll = db.prepare('DELETE FROM redis_keys');
   const deleteExpiredStmt = db.prepare('DELETE FROM redis_keys WHERE expires_at IS NOT NULL AND expires_at <= ?');
   const countAll = db.prepare('SELECT COUNT(*) AS n FROM redis_keys').pluck();
+  const countLive = db.prepare(
+    `SELECT COUNT(*) AS n
+       FROM redis_keys k
+      WHERE (k.expires_at IS NULL OR k.expires_at > ?)
+        AND (
+          k.type != ?
+          OR EXISTS (
+            SELECT 1
+              FROM redis_hashes h
+              LEFT JOIN redis_hash_field_ttl t ON t.key = h.key AND t.field = h.field
+             WHERE h.key = k.key
+               AND (t.expires_at IS NULL OR t.expires_at > ?)
+          )
+        )`
+  ).pluck();
   const scanKeys = db.prepare(
     'SELECT key FROM redis_keys ORDER BY key LIMIT ? OFFSET ?'
   );
@@ -140,12 +156,20 @@ export function createKeysStorage(db) {
       return deleteByKey.run(key);
     },
 
+    deleteAll() {
+      return deleteAll.run().changes;
+    },
+
     deleteExpired(now) {
       return deleteExpiredStmt.run(now);
     },
 
     count() {
       return countAll.get() ?? 0;
+    },
+
+    countLive(now) {
+      return countLive.get(now, KEY_TYPES.HASH, now) ?? 0;
     },
 
     scan(limit, offset) {

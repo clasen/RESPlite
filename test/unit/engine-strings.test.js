@@ -161,6 +161,23 @@ describe('Engine string cache', () => {
     db.close();
   });
 
+  it('flushDatabase deletes persistent values and clears cached entries', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.set('one', 'value');
+    engine.hset('two', 'field', 'value');
+    engine.hgetall('two');
+    assert.equal(engine.dbsize(), 2);
+    assert.equal(cache.stats.entries, 2);
+
+    engine.flushDatabase();
+
+    assert.equal(engine.dbsize(), 0);
+    assert.equal(cache.stats.entries, 0);
+    assert.equal(engine.get('one'), null);
+    assert.equal(engine.hget('two', 'field'), null);
+    db.close();
+  });
+
   it('keeps MSET atomic and MGET returns null for wrong types', () => {
     const { db, engine } = cachedEngine();
     engine.set('string', 'old');

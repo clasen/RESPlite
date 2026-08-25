@@ -9,6 +9,7 @@ import { createHashesStorage } from '../storage/sqlite/hashes.js';
 import { createSetsStorage } from '../storage/sqlite/sets.js';
 import { createListsStorage } from '../storage/sqlite/lists.js';
 import { createZsetsStorage } from '../storage/sqlite/zsets.js';
+import { clearSearchData } from '../storage/sqlite/search.js';
 import { createBlockingManager } from '../blocking/manager.js';
 import { runInTransaction } from '../storage/sqlite/tx.js';
 import { expectString, expectHash, expectSet, expectList, expectZset, typeName } from './validate.js';
@@ -412,6 +413,18 @@ export function createEngine(opts = {}) {
         if (getKeyMeta(key)) n++;
       }
       return n;
+    },
+
+    dbsize() {
+      return keys.countLive(clock());
+    },
+
+    flushDatabase() {
+      runInTransaction(db, () => {
+        keys.deleteAll();
+        clearSearchData(db);
+      });
+      cache?.clear();
     },
 
     expire(key, seconds) {

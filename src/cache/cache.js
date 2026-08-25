@@ -36,6 +36,10 @@ export function createCache(opts = {}) {
       if (!enabled) return;
       lru.del(key);
     },
+    clear() {
+      if (!enabled) return;
+      lru.clear();
+    },
     limits,
     get stats() {
       return { enabled, ...lru.stats };

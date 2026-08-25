@@ -27,6 +27,25 @@ describe('Cache', () => {
     assert.equal(cache.stats.misses, 1);
   });
 
+  it('clear removes all entries while preserving access counters', () => {
+    const cache = createCache({ enabled: true });
+    cache.set('a', 'string', Buffer.from('one'), 1, null);
+    cache.set('b', 'string', Buffer.from('two'), 1, null);
+    cache.get('a');
+    cache.get('missing');
+
+    cache.clear();
+
+    assert.deepEqual(cache.stats, {
+      enabled: true,
+      entries: 0,
+      bytes: 0,
+      hits: 1,
+      misses: 1,
+      hitRatio: 0.5,
+    });
+  });
+
   it('exposes per-type collection limits', () => {
     const cache = createCache({
       maxSetMembers: 10,
@@ -116,6 +135,7 @@ describe('Cache', () => {
     cache.set('k', 'string', Buffer.from('value'), 1, null);
     assert.equal(cache.get('k'), null);
     cache.invalidate('k');
+    cache.clear();
 
     assert.deepEqual(cache.stats, {
       enabled: false,

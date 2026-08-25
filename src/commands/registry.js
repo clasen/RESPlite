@@ -13,6 +13,9 @@ import * as strlen from './strlen.js';
 import * as del from './del.js';
 import * as unlink from './unlink.js';
 import * as exists from './exists.js';
+import * as dbsize from './dbsize.js';
+import * as flushdb from './flushdb.js';
+import * as flushall from './flushall.js';
 import * as type from './type.js';
 import * as object from './object.js';
 import * as mget from './mget.js';
@@ -115,6 +118,9 @@ const HANDLERS = new Map([
   ['DEL', (e, a) => del.handleDel(e, a)],
   ['UNLINK', (e, a) => unlink.handleUnlink(e, a)],
   ['EXISTS', (e, a) => exists.handleExists(e, a)],
+  ['DBSIZE', (e, a) => dbsize.handleDbsize(e, a)],
+  ['FLUSHDB', (e, a) => flushdb.handleFlushdb(e, a)],
+  ['FLUSHALL', (e, a) => flushall.handleFlushall(e, a)],
   ['TYPE', (e, a) => type.handleType(e, a)],
   ['OBJECT', (e, a) => object.handleObject(e, a)],
   ['MGET', (e, a) => mget.handleMget(e, a)],

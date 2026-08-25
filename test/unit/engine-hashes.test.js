@@ -156,6 +156,18 @@ describe('Engine hash cache', () => {
     db.close();
   });
 
+  it('DBSIZE excludes a hash whose last field has expired', () => {
+    const { db, engine, advance } = cachedEngine();
+    engine.hset('expiring-hash', 'field', 'value');
+    engine.hexpire('expiring-hash', 1_500, ['field']);
+    assert.equal(engine.dbsize(), 1);
+
+    advance(501);
+
+    assert.equal(engine.dbsize(), 0);
+    db.close();
+  });
+
   it('does not cache hashes above the configured field limit', () => {
     const { db, cache, engine } = cachedEngine({ cacheOptions: { maxHashFields: 1 } });
     engine.hset('hash', 'a', '1', 'b', '2');

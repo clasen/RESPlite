@@ -5,7 +5,7 @@
 
 /** @type {Set<string>} Commands that modify data (write). */
 const WRITE_COMMANDS = new Set([
-  'SET', 'SETEX', 'MSET', 'MSETNX', 'DEL', 'UNLINK', 'EXPIRE', 'PEXPIRE', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
+  'SET', 'SETEX', 'MSET', 'MSETNX', 'DEL', 'UNLINK', 'FLUSHDB', 'FLUSHALL', 'EXPIRE', 'PEXPIRE', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
   'HSET', 'HDEL', 'HINCRBY', 'SADD', 'SREM', 'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LREM', 'LMPOP', 'ZADD', 'ZREM', 'ZMPOP',
   'FT.CREATE', 'FT.ADD', 'FT.DEL', 'FT.SUGADD', 'FT.SUGDEL', 'CLIENT',
 ]);
@@ -36,12 +36,14 @@ function docFor(name, canonicalName = name) {
     else if (canonicalName === 'SUBSCRIBE' || canonicalName === 'PSUBSCRIBE') arity = -2;
     else if (canonicalName === 'PUBSUB') arity = -2;
     else arity = -1;
-  } else if (['MGET', 'MSET', 'DEL', 'UNLINK', 'EXISTS', 'KEYS', 'SCAN', 'PING', 'ECHO', 'QUIT', 'TYPE', 'OBJECT', 'SQLITE.INFO', 'CACHE.INFO', 'MEMORY.INFO', 'COMMAND', 'MONITOR', 'CLIENT'].includes(canonicalName)) {
-    if (['PING', 'ECHO', 'QUIT', 'COMMAND', 'MONITOR'].includes(canonicalName)) {
+  } else if (['MGET', 'MSET', 'DEL', 'UNLINK', 'EXISTS', 'KEYS', 'SCAN', 'PING', 'ECHO', 'QUIT', 'TYPE', 'OBJECT', 'SQLITE.INFO', 'CACHE.INFO', 'MEMORY.INFO', 'COMMAND', 'MONITOR', 'CLIENT', 'DBSIZE', 'FLUSHDB', 'FLUSHALL'].includes(canonicalName)) {
+    if (['PING', 'ECHO', 'QUIT', 'COMMAND', 'MONITOR', 'DBSIZE', 'FLUSHDB', 'FLUSHALL'].includes(canonicalName)) {
       firstKey = 0;
       lastKey = 0;
       step = 0;
-      arity = canonicalName === 'COMMAND' || canonicalName === 'PING' ? -1 : (canonicalName === 'ECHO' ? 2 : 1);
+      if (canonicalName === 'DBSIZE') arity = 1;
+      else if (canonicalName === 'FLUSHDB' || canonicalName === 'FLUSHALL') arity = -1;
+      else arity = canonicalName === 'COMMAND' || canonicalName === 'PING' ? -1 : (canonicalName === 'ECHO' ? 2 : 1);
     } else if (['MGET', 'EXISTS', 'KEYS', 'SCAN'].includes(canonicalName)) {
       arity = -2;
       lastKey = -1;

@@ -81,10 +81,16 @@ export function createLRU(opts = {}) {
     }
   }
 
+  function clear() {
+    map.clear();
+    totalBytes = 0;
+  }
+
   return {
     get,
     set,
     del,
+    clear,
     get stats() {
       return {
         entries: map.size,

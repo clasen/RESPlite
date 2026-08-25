@@ -720,7 +720,7 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 | Category | Commands |
 |---|---|
 | **Connection** | PING, ECHO, QUIT |
-| **Strings** | GET, SET, MGET, MSET, MSETNX, DEL, EXISTS, INCR, DECR, INCRBY, DECRBY, STRLEN |
+| **Strings** | GET, SET, MGET, MSET, MSETNX, DEL, UNLINK, EXISTS, INCR, DECR, INCRBY, DECRBY, STRLEN |
 | **TTL** | EXPIRE, PEXPIRE, TTL, PTTL, PERSIST |
 | **Hashes** | HSET, HGET, HMGET, HGETALL, HKEYS, HVALS, HDEL, HEXISTS, HINCRBY, HEXPIRE, HTTL, HPERSIST |
 | **Sets** | SADD, SREM, SMEMBERS, SISMEMBER, SMISMEMBER, SCARD, SPOP, SRANDMEMBER |
@@ -729,7 +729,9 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 | **Search (FT.\*)** | FT.CREATE, FT.INFO, FT.ADD, FT.DEL, FT.GET, FT.SEARCH, FT.SUGADD, FT.SUGGET, FT.SUGDEL |
 | **Pub/Sub** | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB CHANNELS, PUBSUB NUMSUB, PUBSUB NUMPAT |
 | **Introspection** | TYPE, OBJECT IDLETIME, SCAN, KEYS, RENAME, MONITOR |
-| **Admin** | SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
+| **Admin** | DBSIZE, FLUSHDB, FLUSHALL, SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
+
+RESPlite has one logical database, so `FLUSHDB` and `FLUSHALL` have the same effect. Both accept `SYNC` and `ASYNC` for client compatibility, but SQLite completes either form synchronously. A flush removes the keyspace and all `FT.*` indices, documents, and suggestions; internal migration bookkeeping is preserved.
 
 ### Not supported (v1)
 

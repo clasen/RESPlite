@@ -28,6 +28,27 @@ function tableName(idx, suffix) {
   return `search_${suffix}__${idx}`;
 }
 
+function quoteIdentifier(identifier) {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+/**
+ * Remove all RESP-visible search indices, documents and suggestions.
+ * Migration bookkeeping is intentionally stored separately and is not touched.
+ * @param {import('better-sqlite3').Database} db
+ */
+export function clearSearchData(db) {
+  const names = db.prepare('SELECT name FROM search_indices').pluck().all();
+  for (const name of names) {
+    validateIndexName(name);
+    for (const suffix of ['fts', 'docs', 'docmap', 'sugs']) {
+      db.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tableName(name, suffix))}`);
+    }
+  }
+  db.prepare('DELETE FROM search_indices').run();
+  db.prepare('DELETE FROM search_rowid_allocator').run();
+}
+
 /**
  * Build deterministic sorted field names for FTS column order.
  * @param {{ fields: { name: string, type: string }[] }} schema
