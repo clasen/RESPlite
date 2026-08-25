@@ -1,131 +1,86 @@
 ---
 name: resplite
-description: Implements or extends a Redis-like command in RESPLite from spec to docs and tests. Use when the user says "add a command", "support a Redis option", "fix command compatibility", "implement ZRANGE behavior", or "update the compatibility matrix". Do not use for migration-only or FT-only work unless the change also affects the general command surface.
+description: Integrates and operates RESPlite in a Node.js application through its public APIs. Use when adding one embedded server, managing multiple named instances, configuring SQLite, cache, hooks, command policy, or graceful shutdown. Do not use for contributing commands, migration internals, or FT implementation work.
 metadata:
   category: workflow-automation
-  tags: [resplite, redis, commands, tests]
+  tags: [resplite, redis, sqlite, embedded, integration]
 ---
 
-# RESPLite Command Vertical Slice
+# Integrate RESPlite
 
-Use this skill when a task requires changing RESPLite's public command behavior end to end rather than only editing one isolated function.
+Use this skill to add RESPlite to an application, not to modify RESPlite internals.
 
-## Use cases
+## Choose the runtime shape
 
-**Use Case: Add a missing command**
-Trigger: "implement command X", "add Redis compatibility for X", "support command Y"
-Steps: inspect spec and current support, wire the handler, update engine or storage if needed, add tests, update docs
-Result: a verified command slice that works through RESP and is reflected in the public docs
+- Use `createRESPlite()` when the process needs one embedded RESP server.
+- Use `createRESPliteGroup()` when one process owns two or more independent named servers.
+- Use the standalone entrypoint only when RESPlite should run as its own process.
 
-**Use Case: Extend a partially supported command**
-Trigger: "support another ZRANGE option", "fix TTL edge case", "match Redis error behavior"
-Steps: compare current implementation with intended semantics, patch the smallest layer that owns the behavior, strengthen tests, update compatibility notes
-Result: improved compatibility without widening scope unnecessarily
+Import embedded APIs from `resplite/embed`.
 
-**Use Case: Audit a command regression**
-Trigger: "this command broke", "redis-cli behaves differently", "wrongtype or ERR output is wrong"
-Steps: reproduce through tests, isolate whether the issue is parser, handler, engine, or storage, fix the owning layer, verify client-facing behavior
-Result: the bug is fixed with regression coverage
+## One embedded server
 
-## Instructions
+```javascript
+import { createRESPlite } from 'resplite/embed';
 
-### Step 1: Lock the compatibility target
+const server = await createRESPlite({
+  host: '127.0.0.1',
+  port: 6380,
+  db: './data.db',
+});
 
-Start by defining the exact command surface you are changing:
+// Use server.port when port: 0 lets the OS choose a port.
+await server.close();
+```
 
-- command name and sub-options
-- expected success reply shape
-- expected error strings
-- whether the change is Redis-standard behavior or RESPLite-specific behavior
+`createRESPlite()` returns `{ host, port, close }`. By default it owns `SIGINT` and `SIGTERM`; pass `gracefulShutdown: false` when the application already has a global shutdown sequence.
 
-Favor the smallest compatibility increment that solves the user's request. RESPLite is intentionally a practical subset, not a full Redis clone.
+## Multiple embedded servers
 
-### Step 2: Review the canonical sources first
+```javascript
+import { createRESPliteGroup } from 'resplite/embed';
 
-Read these files before editing:
+const group = await createRESPliteGroup({
+  main: {
+    host: '127.0.0.1',
+    port: 6380,
+    db: './main.db',
+  },
+  volatile: {
+    host: '127.0.0.1',
+    port: 6379,
+    db: ':memory:',
+    cache: false,
+  },
+});
 
-- `README.md` for the public compatibility matrix and examples
-- `src/commands/registry.js` for command dispatch and handler registration
+console.log(group.servers.main.port);
+await group.close();
+```
 
-Then inspect the command-specific implementation:
+The group starts instances in declaration order, rolls back earlier instances if a later start fails, and closes every instance through one idempotent `close()` call. It owns one `SIGINT`/`SIGTERM` handler pair unless the second argument is `{ gracefulShutdown: false }`.
 
-- `src/commands/*.js` for argument parsing and command-level behavior
-- `src/engine/*.js` when semantics belong to the engine
-- `src/storage/sqlite/*.js` when persistence or query behavior changes
-- relevant tests in `test/unit`, `test/integration`, and `test/contract`
+## Configuration decisions
 
-### Step 3: Choose the owning layer
+- Resolve relative `db` paths in the application when they come from external configuration; RESPlite interprets them relative to the process working directory.
+- Give every persistent instance a different SQLite file. Repeating `:memory:` is valid because each instance receives its own in-memory database.
+- Treat `cache`, pragmas, hooks, and command policy as instance-local options.
+- Use `cache: false` when an extra hot-data cache is unnecessary, such as for a small in-memory instance.
+- Use hooks for application observability and `commandPolicy` to rename or disable commands exposed by that server.
 
-Use this decision rule:
+Do not invent local fallback values for operational settings already owned by the application's configuration.
 
-- parser or command syntax issue: fix the command handler
-- business semantics issue: fix the engine layer
-- persistence or query issue: fix SQLite storage helpers
-- public support surface changed: also update `README.md` and, if needed, the spec
+## Lifecycle ownership
 
-Avoid scattering logic across layers when one layer can own it cleanly.
+Choose one owner for process signals:
 
-### Step 4: Implement the smallest vertical slice
+- Let RESPlite own them for a dedicated embedded server or group.
+- Pass `gracefulShutdown: false` and await `server.close()` or `group.close()` from the application's existing shutdown coordinator.
 
-Typical command workflow:
+Do not register per-instance signal handlers around a group, and do not force `process.exit()` before all application resources have closed.
 
-1. Add or update the handler in `src/commands`
-2. Register it in `src/commands/registry.js` if needed
-3. Patch engine or storage behavior only where required
-4. Preserve existing error style such as `ERR ...` and wrong-type behavior
-5. Keep binary-safety expectations in mind when keys or values pass through buffers and SQLite
+## Boundaries
 
-If a new command expands publicly supported behavior, update the compatibility matrix in `README.md`.
+A group coordinates lifecycle only. Its servers do not share data, cache, Pub/Sub subscriptions, or Redis Cluster semantics. Sharing one persistent SQLite file between instances is unsupported.
 
-### Step 5: Prove it through the right test level
-
-Pick the smallest test mix that proves the change:
-
-- `test/unit/*.test.js` for pure logic, engine rules, parser behavior, or storage helpers
-- `test/integration/*.test.js` for end-to-end RESP behavior through the server
-- `test/contract/*.test.js` when compatibility with `redis` client or `redis-cli` is part of the user-facing promise
-
-Prefer adding a regression test that would fail before the fix and pass after it.
-
-### Step 6: Report the outcome clearly
-
-When you finish, summarize:
-
-- what compatibility surface changed
-- which layers were touched
-- which tests were run
-- any remaining intentional gaps versus Redis
-
-## RESPLite-specific checklist
-
-- Keep scope aligned with "practical Redis compatibility", not total parity
-- Preserve RESP2-facing behavior
-- Use the public docs to reflect newly supported behavior
-- Do not claim support in docs until tests back it up
-- If the command is intentionally unsupported, return the project's clear unsupported-command behavior instead of faking partial support
-
-## Examples
-
-**Example 1: Add a missing command**
-User says: "Implement a minimal `ZRANK` command."
-Actions: review `spec/SPEC_A.md`, inspect zset handlers and storage helpers, add `src/commands/zrank.js`, register it, add unit and integration coverage, update `README.md` only if support becomes public
-Result: one new command works end to end with verified semantics
-
-**Example 2: Fix a compatibility edge case**
-User says: "Make `TTL` return the right value for missing keys."
-Actions: inspect existing TTL tests, patch the owning logic, add a regression test, verify no unrelated TTL behavior changed
-Result: client-visible compatibility improves with minimal code churn
-
-## Troubleshooting
-
-**Problem: The handler exists but the command still returns unsupported**
-Cause: `src/commands/registry.js` was not updated, or the command name casing does not match dispatch behavior.
-Solution: register the handler in uppercase form and verify the RESP command path through an integration test.
-
-**Problem: The command works in unit tests but not through clients**
-Cause: only internal logic was tested; RESP parsing, argument shape, or connection handling may differ.
-Solution: add an integration test, and add a contract test if `redis-cli` or the official `redis` client is part of the promise.
-
-**Problem: The change feels larger than one command**
-Cause: the request may actually be a search feature or migration flow change rather than a generic command extension.
-Solution: switch to the more specific RESPLite skill for migration or `FT.*` work instead of forcing everything into one command slice.
+For Redis migration workflows use the `resplite-migration` skill. For implementing or extending `FT.*` behavior inside RESPlite use `resplite-ft-search`.

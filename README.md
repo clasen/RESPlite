@@ -303,6 +303,32 @@ await client.quit();
 await srv.close();
 ```
 
+### Multiple embedded instances
+
+Use `createRESPliteGroup` when one process owns two or more independent RESPLite servers:
+
+```javascript
+import { createRESPliteGroup } from 'resplite/embed';
+
+const group = await createRESPliteGroup({
+  main: {
+    port: 6380,
+    db: './main.db',
+  },
+  volatile: {
+    port: 6379,
+    db: ':memory:',
+  },
+});
+
+console.log(group.servers.main.port);
+await group.close();
+```
+
+The group starts instances in declaration order, rolls back those already running if a later start fails, and owns one `SIGTERM`/`SIGINT` handler pair. `group.close()` is idempotent and attempts to close every instance before reporting an `AggregateError`. Pass `{ gracefulShutdown: false }` as the second argument when the application owns process shutdown. Persistent instances in the same group must use different SQLite files.
+
+The group coordinates lifecycle only. Its instances do not share data, cache, or Pub/Sub subscriptions.
+
 ### Strings, TTL, and key operations
 
 ```javascript

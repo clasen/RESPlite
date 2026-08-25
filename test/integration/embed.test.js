@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { createClient } from 'redis';
-import { createRESPlite } from '../../src/embed.js';
+import { createRESPlite, createRESPliteGroup } from '../../src/embed.js';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 async function redisClient(port) {
@@ -323,5 +324,125 @@ describe('createRESPlite', () => {
     assert.ok(hgetError.error.includes('WRONGTYPE'));
     assert.equal(typeof hgetError.connectionId, 'number');
     assert.ok(hgetError.clientAddress.length > 0);
+  });
+});
+
+describe('createRESPliteGroup', () => {
+  it('starts named independent servers with one pair of signal listeners', async () => {
+    const initialSigtermListeners = process.listenerCount('SIGTERM');
+    const initialSigintListeners = process.listenerCount('SIGINT');
+    const group = await createRESPliteGroup({
+      main: { port: 0, gracefulShutdown: true },
+      cluster: { port: 0 },
+    });
+    const mainClient = await redisClient(group.servers.main.port);
+    const clusterClient = await redisClient(group.servers.cluster.port);
+
+    try {
+      assert.deepEqual(Object.keys(group.servers), ['main', 'cluster']);
+      assert.notEqual(group.servers.main.port, group.servers.cluster.port);
+      assert.equal(process.listenerCount('SIGTERM'), initialSigtermListeners + 1);
+      assert.equal(process.listenerCount('SIGINT'), initialSigintListeners + 1);
+
+      await mainClient.set('scope', 'main');
+      await clusterClient.set('scope', 'cluster');
+      assert.equal(await mainClient.get('scope'), 'main');
+      assert.equal(await clusterClient.get('scope'), 'cluster');
+    } finally {
+      await mainClient.quit();
+      await clusterClient.quit();
+      await group.close();
+    }
+
+    await group.close();
+    assert.equal(process.listenerCount('SIGTERM'), initialSigtermListeners);
+    assert.equal(process.listenerCount('SIGINT'), initialSigintListeners);
+  });
+
+  it('supports application-owned graceful shutdown', async () => {
+    const initialSigtermListeners = process.listenerCount('SIGTERM');
+    const initialSigintListeners = process.listenerCount('SIGINT');
+    const group = await createRESPliteGroup({
+      main: { port: 0 },
+      cluster: { port: 0 },
+    }, { gracefulShutdown: false });
+
+    try {
+      assert.equal(process.listenerCount('SIGTERM'), initialSigtermListeners);
+      assert.equal(process.listenerCount('SIGINT'), initialSigintListeners);
+    } finally {
+      await group.close();
+    }
+  });
+
+  it('attempts every server close before reporting failures', async () => {
+    const group = await createRESPliteGroup({
+      main: { port: 0 },
+      cluster: { port: 0 },
+    }, { gracefulShutdown: false });
+    const closeMain = group.servers.main.close;
+    const closeCluster = group.servers.cluster.close;
+    let clusterClosed = false;
+
+    group.servers.main.close = async () => {
+      await closeMain();
+      throw new Error('main close failed');
+    };
+    group.servers.cluster.close = async () => {
+      await closeCluster();
+      clusterClosed = true;
+    };
+
+    const firstClose = group.close();
+    assert.strictEqual(group.close(), firstClose);
+    await assert.rejects(
+      firstClose,
+      (error) => error instanceof AggregateError
+        && error.message.includes('main')
+        && error.errors[0].message === 'main close failed'
+    );
+    assert.equal(clusterClosed, true);
+  });
+
+  it('rejects empty groups and duplicate persistent databases', async () => {
+    await assert.rejects(
+      createRESPliteGroup({}),
+      /requires at least one instance/
+    );
+
+    const dbPath = tmpDbPath();
+    const aliasedDbPath = `${path.dirname(dbPath)}/./${path.basename(dbPath)}`;
+    await assert.rejects(
+      createRESPliteGroup({
+        main: { db: dbPath },
+        cluster: { db: aliasedDbPath },
+      }),
+      /cannot share SQLite database/
+    );
+  });
+
+  it('rolls back servers already started when a later instance fails', async () => {
+    const reservation = await createRESPlite({ port: 0, gracefulShutdown: false });
+    const firstPort = reservation.port;
+    await reservation.close();
+
+    const blocker = await createRESPlite({ port: 0, gracefulShutdown: false });
+    try {
+      await assert.rejects(
+        createRESPliteGroup({
+          first: { port: firstPort },
+          blocked: { port: blocker.port },
+        }, { gracefulShutdown: false }),
+        (error) => error?.code === 'EADDRINUSE'
+      );
+
+      const replacement = await createRESPlite({
+        port: firstPort,
+        gracefulShutdown: false,
+      });
+      await replacement.close();
+    } finally {
+      await blocker.close();
+    }
   });
 });

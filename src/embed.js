@@ -12,6 +12,7 @@
  */
 
 import net from 'node:net';
+import path from 'node:path';
 import { handleConnection } from './server/connection.js';
 import { createEngine } from './engine/engine.js';
 import { createCache } from './cache/cache.js';
@@ -20,6 +21,56 @@ import { compileCommandPolicy } from './commands/registry.js';
 import { createPubSubBroker } from './pubsub/broker.js';
 
 export { handleConnection, createEngine, openDb, createPubSubBroker };
+
+function validateGroupInstances(instances) {
+  if (!instances || typeof instances !== 'object' || Array.isArray(instances)) {
+    throw new TypeError('RESPlite group instances must be a named object');
+  }
+
+  const entries = Object.entries(instances);
+  if (entries.length === 0) {
+    throw new TypeError('RESPlite group requires at least one instance');
+  }
+
+  const persistentDatabases = new Map();
+  for (const [name, options] of entries) {
+    if (!name) {
+      throw new TypeError('RESPlite group instance names must not be empty');
+    }
+    if (!options || typeof options !== 'object' || Array.isArray(options)) {
+      throw new TypeError(`RESPlite group instance "${name}" must have an options object`);
+    }
+
+    const dbPath = options.db ?? ':memory:';
+    if (typeof dbPath !== 'string' || dbPath.length === 0) {
+      throw new TypeError(`RESPlite group instance "${name}" must have a valid db path`);
+    }
+    if (dbPath === ':memory:') continue;
+
+    const canonicalPath = path.resolve(dbPath);
+    const existingName = persistentDatabases.get(canonicalPath);
+    if (existingName) {
+      throw new Error(
+        `RESPlite group instances "${existingName}" and "${name}" cannot share SQLite database "${dbPath}"`
+      );
+    }
+    persistentDatabases.set(canonicalPath, name);
+  }
+
+  return entries;
+}
+
+async function closeGroupServers(entries) {
+  const results = await Promise.allSettled(
+    entries.map(async ([, server]) => server.close())
+  );
+
+  return results.flatMap((result, index) => (
+    result.status === 'rejected'
+      ? [{ name: entries[index][0], reason: result.reason }]
+      : []
+  ));
+}
 
 /**
  * Optional event hooks for observability (e.g. logging unknown commands or errors).
@@ -71,7 +122,32 @@ export async function createRESPlite({
     socket.once('close', () => connections.delete(socket));
     handleConnection(socket, engine, hooks, compiledCommandPolicy, { pubSub });
   });
-  await new Promise((resolve) => server.listen(port, host, resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      const onError = (error) => {
+        server.off('listening', onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve();
+      };
+
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, host);
+    });
+  } catch (error) {
+    try {
+      db.close();
+    } catch (closeError) {
+      throw new AggregateError(
+        [error, closeError],
+        'Failed to start RESPlite and close its database'
+      );
+    }
+    throw error;
+  }
 
   let closePromise = null;
   let onSignal = null;
@@ -86,14 +162,22 @@ export async function createRESPlite({
   const close = () => {
     if (closePromise) return closePromise;
     removeSignalHandlers();
-    closePromise = new Promise((resolve) => {
+    closePromise = new Promise((resolve, reject) => {
       for (const socket of connections) {
         socket.destroy();
       }
       connections.clear();
-      server.close(() => {
-        db.close();
-        resolve();
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        try {
+          db.close();
+          resolve();
+        } catch (closeError) {
+          reject(closeError);
+        }
       });
     });
     return closePromise;
@@ -110,6 +194,83 @@ export async function createRESPlite({
   return {
     port: server.address().port,
     host,
+    close,
+  };
+}
+
+/**
+ * Start and manage a named group of independent embedded RESPLite servers.
+ * The group owns one pair of process signal handlers and rolls back servers
+ * already started when a later instance fails.
+ *
+ * @param {Record<string, object>} instances Named createRESPlite option objects.
+ * @param {object} [options]
+ * @param {boolean} [options.gracefulShutdown=true] Register one SIGTERM/SIGINT handler for the group.
+ * @returns {Promise<{ servers: Record<string, { port: number, host: string, close: () => Promise<void> }>, close: () => Promise<void> }>}
+ */
+export async function createRESPliteGroup(instances, {
+  gracefulShutdown = true,
+} = {}) {
+  const instanceEntries = validateGroupInstances(instances);
+  const startedEntries = [];
+
+  try {
+    for (const [name, options] of instanceEntries) {
+      const server = await createRESPlite({
+        ...options,
+        gracefulShutdown: false,
+      });
+      startedEntries.push([name, server]);
+    }
+  } catch (error) {
+    const rollbackFailures = await closeGroupServers(startedEntries);
+    if (rollbackFailures.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackFailures.map(({ reason }) => reason)],
+        `Failed to start RESPlite group and roll back: ${rollbackFailures.map(({ name }) => name).join(', ')}`
+      );
+    }
+    throw error;
+  }
+
+  let closePromise = null;
+  let onSignal = null;
+
+  const removeSignalHandlers = () => {
+    if (!onSignal) return;
+    process.off('SIGTERM', onSignal);
+    process.off('SIGINT', onSignal);
+    onSignal = null;
+  };
+
+  const close = () => {
+    if (closePromise) return closePromise;
+    removeSignalHandlers();
+    closePromise = (async () => {
+      const failures = await closeGroupServers(startedEntries);
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures.map(({ reason }) => reason),
+          `Failed to close RESPlite group instances: ${failures.map(({ name }) => name).join(', ')}`
+        );
+      }
+    })();
+    return closePromise;
+  };
+
+  if (gracefulShutdown) {
+    onSignal = () => {
+      close().catch((error) => {
+        process.exitCode = 1;
+        process.emitWarning(error);
+      });
+    };
+    process.on('SIGTERM', onSignal);
+    process.on('SIGINT', onSignal);
+  }
+
+  return {
+    servers: Object.fromEntries(startedEntries),
     close,
   };
 }
