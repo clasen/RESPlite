@@ -12,6 +12,7 @@ import { createZsetsStorage } from '../storage/sqlite/zsets.js';
 import { clearSearchData } from '../storage/sqlite/search.js';
 import { createBlockingManager } from '../blocking/manager.js';
 import { runInTransaction } from '../storage/sqlite/tx.js';
+import { matchPattern } from '../util/patterns.js';
 import { expectString, expectHash, expectSet, expectList, expectZset, typeName } from './validate.js';
 import { asKey, asValue } from '../util/buffers.js';
 
@@ -494,13 +495,19 @@ export function createEngine(opts = {}) {
       const k = asKey(key);
       const existingMeta = getKeyMeta(k);
       const keyValuePairs = pairs.map((p) => (Buffer.isBuffer(p) ? p : asValue(p)));
-      if (keyValuePairs.length === 2) {
-        hashes.set(k, keyValuePairs[0], keyValuePairs[1], { existingMeta });
-      } else {
-        hashes.setMultiple(k, keyValuePairs, { existingMeta });
-      }
+      const added = keyValuePairs.length === 2
+        ? hashes.set(k, keyValuePairs[0], keyValuePairs[1], { existingMeta })
+        : hashes.setMultiple(k, keyValuePairs, { existingMeta });
       invalidateCachedKey(k);
-      return Math.floor(pairs.length / 2);
+      return added;
+    },
+
+    hsetnx(key, field, value) {
+      const k = asKey(key);
+      const existingMeta = getKeyMeta(k);
+      const added = hashes.setIfAbsent(k, asKey(field), asValue(value), { existingMeta });
+      if (added) invalidateCachedKey(k);
+      return added;
     },
 
     hget(key, field) {
@@ -554,6 +561,76 @@ export function createEngine(opts = {}) {
       return out;
     },
 
+    hstrlen(key, field) {
+      const value = this.hget(key, field);
+      return value == null ? 0 : value.length;
+    },
+
+    hscan(key, cursor, options = {}) {
+      const k = asKey(key);
+      const offset = Number(cursor);
+      const count = options.count ?? 10;
+      const meta = getKeyMeta(k);
+      if (!meta) return { cursor: 0, values: [] };
+      expectHash(meta);
+
+      const flat = hashes.scan(k, count, offset);
+      const values = [];
+      for (let i = 0; i < flat.length; i += 2) {
+        if (options.match == null || matchPattern(flat[i], options.match)) {
+          values.push(flat[i]);
+          if (!options.noValues) values.push(flat[i + 1]);
+        }
+      }
+      const scanned = flat.length / 2;
+      const nextCursor = scanned < count ? 0 : offset + scanned;
+      return {
+        cursor: nextCursor,
+        values,
+      };
+    },
+
+    hrandfield(key, count = null, { withValues = false } = {}) {
+      const k = asKey(key);
+      const meta = getKeyMeta(k);
+      if (!meta) return count == null ? null : [];
+      expectHash(meta);
+
+      let entries;
+      const cached = readCachedHash(k);
+      if (cached !== CACHE_MISS) {
+        entries = cached ? [...cached.values()] : [];
+      } else {
+        const { values, hasFieldTtl } = hashes.getAllWithMeta(k);
+        if (!hasFieldTtl) cacheHash(k, values, meta);
+        entries = [];
+        for (let i = 0; i < values.length; i += 2) entries.push([values[i], values[i + 1]]);
+      }
+      if (entries.length === 0) return count == null ? null : [];
+
+      if (count == null) {
+        return Buffer.from(entries[Math.floor(Math.random() * entries.length)][0]);
+      }
+
+      let selected;
+      if (count >= 0) {
+        const shuffled = entries.slice();
+        const limit = Math.min(count, shuffled.length);
+        for (let i = 0; i < limit; i++) {
+          const j = i + Math.floor(Math.random() * (shuffled.length - i));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        selected = shuffled.slice(0, limit);
+      } else {
+        selected = [];
+        for (let i = 0; i < -count; i++) {
+          selected.push(entries[Math.floor(Math.random() * entries.length)]);
+        }
+      }
+      const result = withValues ? selected.flat() : selected.map(([field]) => field);
+      return result.map((value) => Buffer.from(value));
+    },
+
     hdel(key, fields) {
       const k = asKey(key);
       const meta = getKeyMeta(k);
@@ -589,6 +666,19 @@ export function createEngine(opts = {}) {
       return next;
     },
 
+    hincrbyfloat(key, field, amount) {
+      const k = asKey(key);
+      const existingMeta = getKeyMeta(k);
+      const text = Buffer.isBuffer(amount) ? amount.toString('utf8') : String(amount);
+      const number = Number(text);
+      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text) || !Number.isFinite(number)) {
+        throw new Error('ERR value is not a valid float');
+      }
+      const next = hashes.incrFloat(k, asKey(field), number, { existingMeta });
+      invalidateCachedKey(k);
+      return next;
+    },
+
     /**
      * HEXPIRE: apply absolute expiresAtMs to each hash field with optional NX/XX/GT/LT.
      * Returns an array of integers per spec: -2 (missing), 0 (cond), 1 (set), 2 (deleted).
@@ -599,7 +689,9 @@ export function createEngine(opts = {}) {
       if (!meta) return fields.map(() => -2);
       expectHash(meta);
       try {
-        return fields.map((f) => hashes.setFieldExpire(k, asKey(f), expiresAtMs, { condition }));
+        return runInTransaction(db, () => (
+          fields.map((f) => hashes.setFieldExpire(k, asKey(f), expiresAtMs, { condition }))
+        ));
       } finally {
         invalidateCachedKey(k);
       }
@@ -613,15 +705,46 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return fields.map(() => -2);
       expectHash(meta);
-      try {
-        return fields.map((f) => {
-          const ms = hashes.getFieldTtl(k, asKey(f));
-          if (ms < 0) return ms;
-          return Math.floor(ms / 1000);
-        });
-      } finally {
-        invalidateCachedKey(k);
-      }
+      let expired = false;
+      const values = fields.map((f) => {
+        const result = hashes.getFieldTtl(k, asKey(f));
+        if (result.expired) expired = true;
+        if (result.value < 0) return result.value;
+        return Math.floor(result.value / 1000);
+      });
+      if (expired) invalidateCachedKey(k);
+      return values;
+    },
+
+    hpttl(key, fields) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return fields.map(() => -2);
+      expectHash(meta);
+      let expired = false;
+      const values = fields.map((field) => {
+        const result = hashes.getFieldTtl(k, asKey(field));
+        if (result.expired) expired = true;
+        return result.value;
+      });
+      if (expired) invalidateCachedKey(k);
+      return values;
+    },
+
+    hexpiretime(key, fields, { milliseconds = false } = {}) {
+      const k = asKey(key);
+      const meta = getKeyMeta(key);
+      if (!meta) return fields.map(() => -2);
+      expectHash(meta);
+      let expired = false;
+      const values = fields.map((field) => {
+        const result = hashes.getFieldExpireAt(k, asKey(field));
+        if (result.expired) expired = true;
+        if (result.value < 0 || milliseconds) return result.value;
+        return Math.floor(result.value / 1000);
+      });
+      if (expired) invalidateCachedKey(k);
+      return values;
     },
 
     /**
@@ -633,7 +756,7 @@ export function createEngine(opts = {}) {
       if (!meta) return fields.map(() => -2);
       expectHash(meta);
       try {
-        return fields.map((f) => hashes.persistField(k, asKey(f)));
+        return runInTransaction(db, () => fields.map((f) => hashes.persistField(k, asKey(f))));
       } finally {
         invalidateCachedKey(k);
       }

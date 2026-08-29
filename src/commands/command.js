@@ -6,12 +6,42 @@
 /** @type {Set<string>} Commands that modify data (write). */
 const WRITE_COMMANDS = new Set([
   'SET', 'SETEX', 'MSET', 'MSETNX', 'DEL', 'UNLINK', 'FLUSHDB', 'FLUSHALL', 'EXPIRE', 'PEXPIRE', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
-  'HSET', 'HDEL', 'HINCRBY', 'SADD', 'SREM', 'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LREM', 'LMPOP', 'ZADD', 'ZREM', 'ZMPOP',
+  'HSET', 'HSETNX', 'HMSET', 'HDEL', 'HINCRBY', 'HINCRBYFLOAT',
+  'HEXPIRE', 'HPEXPIRE', 'HEXPIREAT', 'HPEXPIREAT', 'HPERSIST',
+  'SADD', 'SREM', 'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LREM', 'LMPOP', 'ZADD', 'ZREM', 'ZMPOP',
   'FT.CREATE', 'FT.ADD', 'FT.DEL', 'FT.SUGADD', 'FT.SUGDEL', 'CLIENT',
 ]);
 
 const PUBSUB_COMMANDS = new Set([
   'PUBLISH', 'SUBSCRIBE', 'UNSUBSCRIBE', 'PSUBSCRIBE', 'PUNSUBSCRIBE', 'PUBSUB',
+]);
+
+const HASH_ARITIES = new Map([
+  ['HSET', -4],
+  ['HSETNX', 4],
+  ['HMSET', -4],
+  ['HGET', 3],
+  ['HMGET', -3],
+  ['HGETALL', 2],
+  ['HKEYS', 2],
+  ['HVALS', 2],
+  ['HDEL', -3],
+  ['HLEN', 2],
+  ['HEXISTS', 3],
+  ['HINCRBY', 4],
+  ['HINCRBYFLOAT', 4],
+  ['HSTRLEN', 3],
+  ['HSCAN', -3],
+  ['HRANDFIELD', -2],
+  ['HEXPIRE', -6],
+  ['HPEXPIRE', -6],
+  ['HEXPIREAT', -6],
+  ['HPEXPIREAT', -6],
+  ['HTTL', -5],
+  ['HPTTL', -5],
+  ['HEXPIRETIME', -5],
+  ['HPEXPIRETIME', -5],
+  ['HPERSIST', -5],
 ]);
 
 /**
@@ -64,8 +94,8 @@ function docFor(name, canonicalName = name) {
     arity = -3;
     lastKey = -1;
     step = 1;
-  } else if (['HMGET', 'HGETALL', 'HGET', 'HSET', 'HDEL', 'HEXISTS', 'HINCRBY', 'HLEN'].includes(canonicalName)) {
-    arity = (canonicalName === 'HGET' || canonicalName === 'HLEN' || canonicalName === 'HEXISTS') ? 3 : -3;
+  } else if (HASH_ARITIES.has(canonicalName)) {
+    arity = HASH_ARITIES.get(canonicalName);
   } else if (canonicalName === 'SETEX') {
     arity = 4;
   }

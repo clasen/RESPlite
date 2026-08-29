@@ -701,6 +701,14 @@ All four RESPLite variants finished with the application cache enabled and the s
 
 To reproduce the all-template benchmark, run `npm run benchmark`. Use `npm run benchmark -- --template default` to measure only the default template. Numbers depend on the host, process state, and whether Redis is native or in Docker; compare results from the same run rather than treating this snapshot as a universal performance guarantee.
 
+To benchmark only the hash commands added after the original snapshot:
+
+```bash
+npm run benchmark:hash
+```
+
+This focused run compares `HSETNX` (successful insert and existing-field no-op), `HMSET`, `HINCRBYFLOAT`, `HSTRLEN`, `HSCAN`, `HRANDFIELD`, and the millisecond/absolute hash-field expiration commands against Redis. `HSETNX (insert+reset)` is a two-command workload because each successful insertion is preceded by `HDEL`; every other row is one measured command per iteration. Use `--iterations`, `--redis-port`, `--resplite-port`, or `--resplite-only` as with the main benchmark.
+
 To compare the cache behavior under the same workload:
 
 ```bash
@@ -748,7 +756,7 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 | **Connection** | PING, ECHO, QUIT |
 | **Strings** | GET, SET, MGET, MSET, MSETNX, DEL, UNLINK, EXISTS, INCR, DECR, INCRBY, DECRBY, STRLEN |
 | **TTL** | EXPIRE, PEXPIRE, TTL, PTTL, PERSIST |
-| **Hashes** | HSET, HGET, HMGET, HGETALL, HKEYS, HVALS, HDEL, HEXISTS, HINCRBY, HEXPIRE, HTTL, HPERSIST |
+| **Hashes** | HSET, HSETNX, HMSET, HGET, HMGET, HGETALL, HKEYS, HVALS, HDEL, HEXISTS, HLEN, HSTRLEN, HINCRBY, HINCRBYFLOAT, HSCAN, HRANDFIELD, HEXPIRE, HPEXPIRE, HEXPIREAT, HPEXPIREAT, HTTL, HPTTL, HEXPIRETIME, HPEXPIRETIME, HPERSIST |
 | **Sets** | SADD, SREM, SMEMBERS, SISMEMBER, SMISMEMBER, SCARD, SPOP, SRANDMEMBER |
 | **Lists** | LPUSH, RPUSH, LLEN, LRANGE, LINDEX, LPOP, RPOP, LMPOP, LSET, LTRIM, BLPOP, BRPOP |
 | **Sorted sets** | ZADD, ZREM, ZCARD, ZSCORE, ZMSCORE, ZMPOP, ZRANGE, ZREVRANGE, ZRANGEBYSCORE, ZREVRANGEBYSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY, ZREMRANGEBYRANK, ZREMRANGEBYSCORE |
@@ -758,6 +766,8 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 | **Admin** | DBSIZE, FLUSHDB, FLUSHALL, SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
 
 RESPlite has one logical database, so `FLUSHDB` and `FLUSHALL` have the same effect. Both accept `SYNC` and `ASYNC` for client compatibility, but SQLite completes either form synchronously. A flush removes the keyspace and all `FT.*` indices, documents, and suggestions; internal migration bookkeeping is preserved.
+
+`HMSET` is retained as a legacy compatibility alias and returns `OK`; new applications should use multi-field `HSET`. Hash field expiration follows Redis 7.4 semantics: `HSET` clears the affected field TTL, while `HINCRBY` and `HINCRBYFLOAT` preserve it.
 
 ### Not supported (v1)
 

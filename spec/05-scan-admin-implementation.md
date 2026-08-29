@@ -358,7 +358,7 @@ Numeric string operations: INCR, DECR, INCRBY, DECRBY.
 
 ### Phase 5
 
-Hashes: HSET, HGET, HMGET, HGETALL, HDEL, HEXISTS, HINCRBY.
+Hashes: HSET, HSETNX, HMSET, HGET, HMGET, HGETALL, HKEYS, HVALS, HDEL, HEXISTS, HLEN, HSTRLEN, HINCRBY, HINCRBYFLOAT, HSCAN, HRANDFIELD, and the Redis 7.4 hash-field expiration family.
 
 ### Phase 6
 

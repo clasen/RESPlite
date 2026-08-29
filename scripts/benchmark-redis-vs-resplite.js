@@ -12,6 +12,7 @@
  * Usage:
  *   node scripts/benchmark-redis-vs-resplite.js [--iterations N] [--redis-port P] [--resplite-port P] [--template NAME]
  *   node scripts/benchmark-redis-vs-resplite.js --template default --compare-caches [--cache-only] [--resplite-only]
+ *   node scripts/benchmark-redis-vs-resplite.js --template default --new-hash-only [--resplite-only]
  */
 
 import { createClient } from 'redis';
@@ -31,6 +32,7 @@ const DEFAULTS = {
   template: null, // null = all templates (except none); or 'default' | 'performance' | 'safety' | 'minimal'
   compareCaches: false,
   cacheOnly: false,
+  newHashOnly: false,
   respliteOnly: false,
 };
 
@@ -57,6 +59,8 @@ function parseArgs() {
       out.compareCaches = true;
     } else if (args[i] === '--cache-only') {
       out.cacheOnly = true;
+    } else if (args[i] === '--new-hash-only') {
+      out.newHashOnly = true;
     } else if (args[i] === '--resplite-only') {
       out.respliteOnly = true;
     }
@@ -607,6 +611,131 @@ async function benchHincrby(client, n) {
   for (let i = 0; i < n; i++) await client.sendCommand(['HINCRBY', key, field, '1']);
 }
 
+async function benchHsetnxInsert(client, n) {
+  const key = 'bm:hash:hsetnx:insert';
+  const field = 'field';
+  await client.del(key);
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['HDEL', key, field]);
+    await client.sendCommand(['HSETNX', key, field, `value-${i}`]);
+  }
+}
+
+async function benchHsetnxNoop(client, n) {
+  const key = 'bm:hash:hsetnx:noop';
+  const field = 'field';
+  await client.del(key);
+  await client.hSet(key, field, 'value');
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['HSETNX', key, field, `ignored-${i}`]);
+  }
+}
+
+async function benchHmset(client, n) {
+  const key = 'bm:hash:hmset';
+  const pairs = Array.from({ length: 10 }, (_, i) => [`f${i}`, `value-${i}`]).flat();
+  await client.del(key);
+  for (let i = 0; i < n; i++) await client.sendCommand(['HMSET', key, ...pairs]);
+}
+
+async function benchHincrbyfloat(client, n) {
+  const key = 'bm:hash:float';
+  const field = 'counter';
+  await client.del(key);
+  await client.hSet(key, field, '0');
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['HINCRBYFLOAT', key, field, '0.25']);
+  }
+}
+
+async function benchHstrlen(client, n) {
+  const key = 'bm:hash:strlen';
+  const field = 'field';
+  await client.del(key);
+  await client.hSet(key, field, '0123456789abcdef');
+  for (let i = 0; i < n; i++) await client.sendCommand(['HSTRLEN', key, field]);
+}
+
+async function benchHscan(client, n) {
+  const key = 'bm:hash:scan';
+  await client.del(key);
+  await client.hSet(
+    key,
+    Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`field-${i}`, `value-${i}`]))
+  );
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['HSCAN', key, '0', 'MATCH', 'field-*', 'COUNT', '20']);
+  }
+}
+
+async function benchHrandfield(client, n) {
+  const key = 'bm:hash:random';
+  await client.del(key);
+  await client.hSet(
+    key,
+    Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`field-${i}`, `value-${i}`]))
+  );
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['HRANDFIELD', key, '10', 'WITHVALUES']);
+  }
+}
+
+async function seedHashField(client, key, field) {
+  await client.del(key);
+  await client.hSet(key, field, 'value');
+}
+
+async function benchHpexpire(client, n) {
+  const key = 'bm:hash:hpexpire';
+  const field = 'field';
+  await seedHashField(client, key, field);
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['HPEXPIRE', key, '600000', 'FIELDS', '1', field]);
+  }
+}
+
+async function benchHexpireat(client, n) {
+  const key = 'bm:hash:hexpireat';
+  const field = 'field';
+  const expiresAt = String(Math.floor(Date.now() / 1000) + 86400);
+  await seedHashField(client, key, field);
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['HEXPIREAT', key, expiresAt, 'FIELDS', '1', field]);
+  }
+}
+
+async function benchHpexpireat(client, n) {
+  const key = 'bm:hash:hpexpireat';
+  const field = 'field';
+  const expiresAt = String(Date.now() + 86400000);
+  await seedHashField(client, key, field);
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand(['HPEXPIREAT', key, expiresAt, 'FIELDS', '1', field]);
+  }
+}
+
+async function benchHashFieldExpiryRead(client, n, command, keySuffix) {
+  const key = `bm:hash:${keySuffix}`;
+  const field = 'field';
+  await seedHashField(client, key, field);
+  await client.sendCommand(['HPEXPIRE', key, '600000', 'FIELDS', '1', field]);
+  for (let i = 0; i < n; i++) {
+    await client.sendCommand([command, key, 'FIELDS', '1', field]);
+  }
+}
+
+async function benchHpttl(client, n) {
+  await benchHashFieldExpiryRead(client, n, 'HPTTL', 'hpttl');
+}
+
+async function benchHexpiretime(client, n) {
+  await benchHashFieldExpiryRead(client, n, 'HEXPIRETIME', 'hexpiretime');
+}
+
+async function benchHpexpiretime(client, n) {
+  await benchHashFieldExpiryRead(client, n, 'HPEXPIRETIME', 'hpexpiretime');
+}
+
 const FT_INDEX = 'bm_ft_idx';
 const FT_DOCS = 50;
 
@@ -687,6 +816,22 @@ const SUITES = [
   { name: 'FT.SEARCH', fn: benchFtSearch, iterScale: 1 },
 ];
 
+const NEW_HASH_SUITES = [
+  { name: 'HSETNX (insert+reset)', fn: benchHsetnxInsert },
+  { name: 'HSETNX (no-op)', fn: benchHsetnxNoop },
+  { name: 'HMSET(10)', fn: benchHmset },
+  { name: 'HINCRBYFLOAT', fn: benchHincrbyfloat },
+  { name: 'HSTRLEN', fn: benchHstrlen },
+  { name: 'HSCAN(20/1000)', fn: benchHscan },
+  { name: 'HRANDFIELD(10) WITHVALUES', fn: benchHrandfield },
+  { name: 'HPEXPIRE', fn: benchHpexpire },
+  { name: 'HEXPIREAT', fn: benchHexpireat },
+  { name: 'HPEXPIREAT', fn: benchHpexpireat },
+  { name: 'HPTTL', fn: benchHpttl },
+  { name: 'HEXPIRETIME', fn: benchHexpiretime },
+  { name: 'HPEXPIRETIME', fn: benchHpexpiretime },
+];
+
 async function runSuite(redis, respliteClients, suite, iterations) {
   const n = Math.max(1, Math.floor(iterations * (suite.iterScale ?? 1)));
   const redisResult = redis
@@ -710,10 +855,21 @@ async function runSuite(redis, respliteClients, suite, iterations) {
 
 async function main() {
   const options = parseArgs();
-  const { iterations, redisPort, resplitePort, template, compareCaches, cacheOnly, respliteOnly } = options;
+  const {
+    iterations,
+    redisPort,
+    resplitePort,
+    template,
+    compareCaches,
+    cacheOnly,
+    newHashOnly,
+    respliteOnly,
+  } = options;
   const variants = buildVariants(options);
   const variantNames = variants.map((variant) => variant.name);
-  const suites = cacheOnly ? SUITES.filter((suite) => suite.cacheFocus) : SUITES;
+  const suites = newHashOnly
+    ? NEW_HASH_SUITES
+    : (cacheOnly ? SUITES.filter((suite) => suite.cacheFocus) : SUITES);
 
   const benchTmpDir = path.join(PROJECT_ROOT, 'tmp', 'bench');
   fs.mkdirSync(benchTmpDir, { recursive: true });
@@ -730,6 +886,7 @@ async function main() {
   }
   console.log(`  Iterations per suite: ${iterations}`);
   if (cacheOnly) console.log(`  Suites: cache-focused only (${suites.length})`);
+  if (newHashOnly) console.log(`  Suites: new hash commands only (${suites.length})`);
   console.log('');
 
   const children = [];

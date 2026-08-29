@@ -19,9 +19,79 @@ describe('Hashes integration', () => {
   });
 
   it('HSET and HGET', async () => {
-    await sendCommand(port, argv('HSET', 'user:1', 'name', 'Martin', 'age', '42'));
+    const first = await sendCommand(port, argv('HSET', 'user:1', 'name', 'Martin', 'age', '42'));
+    assert.equal(tryParseValue(first, 0).value, 2);
+    const second = await sendCommand(port, argv('HSET', 'user:1', 'name', 'Martín', 'city', 'Buenos Aires'));
+    assert.equal(tryParseValue(second, 0).value, 1);
     const nameReply = await sendCommand(port, argv('HGET', 'user:1', 'name'));
-    assert.equal(nameReply.toString('utf8'), '$6\r\nMartin\r\n');
+    assert.equal(nameReply.toString('utf8'), '$7\r\nMartín\r\n');
+  });
+
+  it('HSETNX and HMSET', async () => {
+    assert.equal(tryParseValue(await sendCommand(port, argv('HSETNX', 'nx', 'field', 'first')), 0).value, 1);
+    assert.equal(tryParseValue(await sendCommand(port, argv('HSETNX', 'nx', 'field', 'second')), 0).value, 0);
+    assert.equal((await sendCommand(port, argv('HGET', 'nx', 'field'))).toString('utf8'), '$5\r\nfirst\r\n');
+    assert.equal((await sendCommand(port, argv('HMSET', 'legacy', 'a', '1', 'b', '2'))).toString('utf8'), '+OK\r\n');
+  });
+
+  it('HINCRBYFLOAT and HSTRLEN', async () => {
+    await sendCommand(port, argv('HSET', 'numbers', 'amount', '10.5', 'binary', Buffer.from([0, 1, 2])));
+    const incremented = await sendCommand(port, argv('HINCRBYFLOAT', 'numbers', 'amount', '0.25'));
+    assert.equal(tryParseValue(incremented, 0).value.toString('utf8'), '10.75');
+    assert.equal(tryParseValue(await sendCommand(port, argv('HSTRLEN', 'numbers', 'binary')), 0).value, 3);
+    assert.equal(tryParseValue(await sendCommand(port, argv('HSTRLEN', 'numbers', 'missing')), 0).value, 0);
+  });
+
+  it('HSCAN supports MATCH, COUNT and NOVALUES', async () => {
+    await sendCommand(port, argv('HSET', 'scan-hash', 'user:3', 'c', 'other', 'x', 'user:1', 'a', 'user:2', 'b'));
+    const first = tryParseValue(
+      await sendCommand(port, argv('HSCAN', 'scan-hash', '0', 'MATCH', 'user:*', 'COUNT', '2')),
+      0
+    ).value;
+    assert.equal(first[0].toString('utf8'), '2');
+    assert.deepEqual(first[1].map((value) => value.toString('utf8')), ['user:1', 'a']);
+    const second = tryParseValue(
+      await sendCommand(port, argv('HSCAN', 'scan-hash', '2', 'MATCH', 'user:*', 'COUNT', '2', 'NOVALUES')),
+      0
+    ).value;
+    assert.equal(second[0].toString('utf8'), '4');
+    assert.deepEqual(second[1].map((value) => value.toString('utf8')), ['user:2', 'user:3']);
+    const done = tryParseValue(await sendCommand(port, argv('HSCAN', 'scan-hash', '4', 'COUNT', '2')), 0).value;
+    assert.equal(done[0].toString('utf8'), '0');
+    assert.deepEqual(done[1], []);
+  });
+
+  it('HRANDFIELD supports count and WITHVALUES', async () => {
+    await sendCommand(port, argv('HSET', 'random-hash', 'a', '1', 'b', '2'));
+    const single = tryParseValue(await sendCommand(port, argv('HRANDFIELD', 'random-hash')), 0).value;
+    assert.ok(['a', 'b'].includes(single.toString('utf8')));
+    const fields = tryParseValue(await sendCommand(port, argv('HRANDFIELD', 'random-hash', '5')), 0).value;
+    assert.equal(fields.length, 2);
+    const pairs = tryParseValue(
+      await sendCommand(port, argv('HRANDFIELD', 'random-hash', '2', 'WITHVALUES')),
+      0
+    ).value;
+    assert.equal(pairs.length, 4);
+  });
+
+  it('validates new hash command arguments and wrong types', async () => {
+    await sendCommand(port, argv('SET', 'hash-wrongtype', 'value'));
+    for (const command of [
+      argv('HSETNX', 'hash-wrongtype', 'field', 'value'),
+      argv('HINCRBYFLOAT', 'hash-wrongtype', 'field', '1.5'),
+      argv('HSTRLEN', 'hash-wrongtype', 'field'),
+      argv('HSCAN', 'hash-wrongtype', '0'),
+      argv('HRANDFIELD', 'hash-wrongtype'),
+      argv('HPTTL', 'hash-wrongtype', 'FIELDS', '1', 'field'),
+    ]) {
+      assert.ok((await sendCommand(port, command)).toString('utf8').includes('WRONGTYPE'));
+    }
+
+    assert.ok((await sendCommand(port, argv('HINCRBYFLOAT', 'h', 'field', 'NaN'))).toString('utf8').startsWith('-ERR'));
+    assert.ok((await sendCommand(port, argv('HSCAN', 'h', '-1'))).toString('utf8').startsWith('-ERR'));
+    assert.ok((await sendCommand(port, argv('HSCAN', 'h', '0', 'COUNT', '0'))).toString('utf8').startsWith('-ERR'));
+    assert.ok((await sendCommand(port, argv('HRANDFIELD', 'h', 'not-a-number'))).toString('utf8').startsWith('-ERR'));
+    assert.ok((await sendCommand(port, argv('HPEXPIRE', 'h', '1.5', 'FIELDS', '1', 'field'))).toString('utf8').startsWith('-ERR'));
   });
 
   it('HGETALL', async () => {
@@ -100,6 +170,42 @@ describe('Hashes integration', () => {
     );
     const ttl2 = Number(tryParseValue(httlReply2, 0).value[0]);
     assert.equal(ttl2, -1);
+  });
+
+  it('supports millisecond and absolute hash field expiration variants', async () => {
+    await sendCommand(port, argv('HSET', 'ttl-variants', 'field', 'value'));
+    assert.equal(
+      Number(tryParseValue(await sendCommand(port, argv('HPEXPIRE', 'ttl-variants', '5000', 'FIELDS', '1', 'field')), 0).value[0]),
+      1
+    );
+    const pttl = Number(
+      tryParseValue(await sendCommand(port, argv('HPTTL', 'ttl-variants', 'FIELDS', '1', 'field')), 0).value[0]
+    );
+    assert.ok(pttl > 0 && pttl <= 5000);
+    const expireAtMs = Number(
+      tryParseValue(await sendCommand(port, argv('HPEXPIRETIME', 'ttl-variants', 'FIELDS', '1', 'field')), 0).value[0]
+    );
+    assert.ok(expireAtMs > Date.now());
+
+    const expireAtSeconds = Math.floor(Date.now() / 1000) + 30;
+    assert.equal(
+      Number(tryParseValue(await sendCommand(port, argv('HEXPIREAT', 'ttl-variants', String(expireAtSeconds), 'FIELDS', '1', 'field')), 0).value[0]),
+      1
+    );
+    assert.equal(
+      Number(tryParseValue(await sendCommand(port, argv('HEXPIRETIME', 'ttl-variants', 'FIELDS', '1', 'field')), 0).value[0]),
+      expireAtSeconds
+    );
+
+    const absoluteMs = Date.now() + 45_000;
+    assert.equal(
+      Number(tryParseValue(await sendCommand(port, argv('HPEXPIREAT', 'ttl-variants', String(absoluteMs), 'FIELDS', '1', 'field')), 0).value[0]),
+      1
+    );
+    assert.equal(
+      Number(tryParseValue(await sendCommand(port, argv('HPEXPIRETIME', 'ttl-variants', 'FIELDS', '1', 'field')), 0).value[0]),
+      absoluteMs
+    );
   });
 
   it('HEXPIRE returns -2 for missing key/field', async () => {

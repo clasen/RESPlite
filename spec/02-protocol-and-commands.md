@@ -43,12 +43,32 @@ Supported:
 Supported:
 
 - `HSET`
+- `HSETNX`
+- `HMSET` (legacy compatibility alias)
 - `HGET`
 - `HMGET`
 - `HGETALL`
+- `HKEYS`
+- `HVALS`
 - `HDEL`
 - `HEXISTS`
+- `HLEN`
+- `HSTRLEN`
 - `HINCRBY`
+- `HINCRBYFLOAT`
+- `HSCAN`
+- `HRANDFIELD`
+- `HEXPIRE`
+- `HPEXPIRE`
+- `HEXPIREAT`
+- `HPEXPIREAT`
+- `HTTL`
+- `HPTTL`
+- `HEXPIRETIME`
+- `HPEXPIRETIME`
+- `HPERSIST`
+
+Hash field expiration is stored as an absolute Unix timestamp in milliseconds. `HSET` clears the expiration of fields it writes; `HINCRBY` and `HINCRBYFLOAT` preserve an existing field expiration. `HSETNX`, multi-field writes, numeric mutations, and expiration updates are atomic SQLite operations.
 
 ### 6.5 Set commands
 

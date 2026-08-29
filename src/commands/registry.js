@@ -31,6 +31,8 @@ import * as decr from './decr.js';
 import * as incrby from './incrby.js';
 import * as decrby from './decrby.js';
 import * as hset from './hset.js';
+import * as hsetnx from './hsetnx.js';
+import * as hmset from './hmset.js';
 import * as hget from './hget.js';
 import * as hmget from './hmget.js';
 import * as hgetall from './hgetall.js';
@@ -40,8 +42,18 @@ import * as hdel from './hdel.js';
 import * as hlen from './hlen.js';
 import * as hexists from './hexists.js';
 import * as hincrby from './hincrby.js';
+import * as hincrbyfloat from './hincrbyfloat.js';
+import * as hstrlen from './hstrlen.js';
+import * as hscan from './hscan.js';
+import * as hrandfield from './hrandfield.js';
 import * as hexpireCmd from './hexpire.js';
+import * as hpexpireCmd from './hpexpire.js';
+import * as hexpireatCmd from './hexpireat.js';
+import * as hpexpireatCmd from './hpexpireat.js';
 import * as httlCmd from './httl.js';
+import * as hpttlCmd from './hpttl.js';
+import * as hexpiretimeCmd from './hexpiretime.js';
+import * as hpexpiretimeCmd from './hpexpiretime.js';
 import * as hpersistCmd from './hpersist.js';
 import * as sadd from './sadd.js';
 import * as srem from './srem.js';
@@ -136,6 +148,8 @@ const HANDLERS = new Map([
   ['INCRBY', (e, a) => incrby.handleIncrby(e, a)],
   ['DECRBY', (e, a) => decrby.handleDecrby(e, a)],
   ['HSET', (e, a) => hset.handleHset(e, a)],
+  ['HSETNX', (e, a) => hsetnx.handleHsetnx(e, a)],
+  ['HMSET', (e, a) => hmset.handleHmset(e, a)],
   ['HGET', (e, a) => hget.handleHget(e, a)],
   ['HMGET', (e, a) => hmget.handleHmget(e, a)],
   ['HGETALL', (e, a) => hgetall.handleHgetall(e, a)],
@@ -145,8 +159,18 @@ const HANDLERS = new Map([
   ['HLEN', (e, a) => hlen.handleHlen(e, a)],
   ['HEXISTS', (e, a) => hexists.handleHexists(e, a)],
   ['HINCRBY', (e, a) => hincrby.handleHincrby(e, a)],
+  ['HINCRBYFLOAT', (e, a) => hincrbyfloat.handleHincrbyfloat(e, a)],
+  ['HSTRLEN', (e, a) => hstrlen.handleHstrlen(e, a)],
+  ['HSCAN', (e, a) => hscan.handleHscan(e, a)],
+  ['HRANDFIELD', (e, a) => hrandfield.handleHrandfield(e, a)],
   ['HEXPIRE', (e, a) => hexpireCmd.handleHexpire(e, a)],
+  ['HPEXPIRE', (e, a) => hpexpireCmd.handleHpexpire(e, a)],
+  ['HEXPIREAT', (e, a) => hexpireatCmd.handleHexpireat(e, a)],
+  ['HPEXPIREAT', (e, a) => hpexpireatCmd.handleHpexpireat(e, a)],
   ['HTTL', (e, a) => httlCmd.handleHttl(e, a)],
+  ['HPTTL', (e, a) => hpttlCmd.handleHpttl(e, a)],
+  ['HEXPIRETIME', (e, a) => hexpiretimeCmd.handleHexpiretime(e, a)],
+  ['HPEXPIRETIME', (e, a) => hpexpiretimeCmd.handleHpexpiretime(e, a)],
   ['HPERSIST', (e, a) => hpersistCmd.handleHpersist(e, a)],
   ['SADD', (e, a) => sadd.handleSadd(e, a)],
   ['SREM', (e, a) => srem.handleSrem(e, a)],

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createEngine } from '../../src/engine/engine.js';
 import { openDb } from '../../src/storage/sqlite/db.js';
 import { createCache } from '../../src/cache/cache.js';
+import { handleHmset } from '../../src/commands/hmset.js';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 describe('Engine hashes', () => {
@@ -11,8 +12,30 @@ describe('Engine hashes', () => {
   const engine = createEngine({ db });
 
   it('HSET and HGET', () => {
-    engine.hset('user:1', Buffer.from('name'), Buffer.from('Martin'));
+    assert.equal(engine.hset('user:1', Buffer.from('name'), Buffer.from('Martin')), 1);
+    assert.equal(engine.hset('user:1', Buffer.from('name'), Buffer.from('Martín')), 0);
+    assert.equal(engine.hset('user:1', 'name', 'Martin', 'age', '42'), 1);
     assert.equal(engine.hget('user:1', 'name').toString(), 'Martin');
+  });
+
+  it('HSET deduplicates fields and keeps the last value', () => {
+    assert.equal(engine.hset('duplicates', 'field', 'first', 'field', 'last'), 1);
+    assert.equal(engine.hset('duplicates', 'field', 'next', 'field', 'final'), 0);
+    assert.equal(engine.hget('duplicates', 'field').toString(), 'final');
+    assert.equal(engine.hlen('duplicates'), 1);
+  });
+
+  it('HSET supports multi-field writes larger than one SQLite parameter chunk', () => {
+    const pairs = Array.from({ length: 300 }, (_, index) => [`f${index}`, `v${index}`]).flat();
+    assert.equal(engine.hset('large-write', ...pairs), 300);
+    assert.equal(engine.hlen('large-write'), 300);
+    assert.equal(engine.hget('large-write', 'f299').toString(), 'v299');
+  });
+
+  it('HSETNX sets only absent fields', () => {
+    assert.equal(engine.hsetnx('nx', 'field', 'first'), 1);
+    assert.equal(engine.hsetnx('nx', 'field', 'second'), 0);
+    assert.equal(engine.hget('nx', 'field').toString(), 'first');
   });
 
   it('HGETALL returns flat array', () => {
@@ -34,6 +57,42 @@ describe('Engine hashes', () => {
   it('HINCRBY', () => {
     engine.hset('cnt', 'n', '10');
     assert.equal(engine.hincrby('cnt', 'n', 5), 15);
+  });
+
+  it('HINCRBYFLOAT and HSTRLEN', () => {
+    engine.hset('float', 'amount', '10.5');
+    assert.equal(engine.hincrbyfloat('float', 'amount', '0.25').toString(), '10.75');
+    engine.hset('float', 'large', '1e20');
+    assert.equal(engine.hincrbyfloat('float', 'large', '9e20').toString(), '1000000000000000000000');
+    engine.hset('float', 'small', '0');
+    assert.equal(engine.hincrbyfloat('float', 'small', '1e-7').toString(), '0.0000001');
+    engine.hset('float', 'binary-rounding', '0.1');
+    assert.equal(engine.hincrbyfloat('float', 'binary-rounding', '0.2').toString(), '0.30000000000000004');
+    assert.equal(engine.hstrlen('float', 'amount'), 5);
+    engine.hset('float', 'binary', Buffer.from([0, 1, 2, 3]));
+    assert.equal(engine.hstrlen('float', 'binary'), 4);
+    assert.equal(engine.hstrlen('float', 'missing'), 0);
+  });
+
+  it('HSCAN filters and paginates fields', () => {
+    engine.hset('scan', 'user:3', 'c', 'other', 'x', 'user:1', 'a', 'user:2', 'b');
+    const first = engine.hscan('scan', 0, { match: Buffer.from('user:*'), count: 2 });
+    assert.equal(first.cursor, 2);
+    assert.deepEqual(first.values.map((value) => value.toString()), ['user:1', 'a']);
+    const second = engine.hscan('scan', first.cursor, { match: Buffer.from('user:*'), count: 2, noValues: true });
+    assert.equal(second.cursor, 4);
+    assert.deepEqual(second.values.map((value) => value.toString()), ['user:2', 'user:3']);
+    assert.equal(engine.hscan('scan', second.cursor, { count: 2 }).cursor, 0);
+  });
+
+  it('HRANDFIELD respects count and WITHVALUES shapes', () => {
+    engine.hset('random', 'a', '1', 'b', '2');
+    assert.ok(['a', 'b'].includes(engine.hrandfield('random').toString()));
+    const distinct = engine.hrandfield('random', 5);
+    assert.equal(distinct.length, 2);
+    assert.equal(new Set(distinct.map((field) => field.toString())).size, 2);
+    assert.equal(engine.hrandfield('random', -4).length, 4);
+    assert.equal(engine.hrandfield('random', 2, { withValues: true }).length, 4);
   });
 
   it('HLEN returns number of fields', () => {
@@ -69,6 +128,7 @@ describe('Engine hash cache', () => {
       cache,
       engine,
       advance(ms) { currentTime += ms; },
+      clock: () => currentTime,
     };
   }
 
@@ -127,6 +187,85 @@ describe('Engine hash cache', () => {
     assert.equal(engine.hincrby('hash', 'a', 5), 15);
     assert.equal(cache.stats.entries, 0);
     assert.equal(engine.hget('hash', 'a').toString(), '15');
+    db.close();
+  });
+
+  it('integrates HSETNX, HMSET and HINCRBYFLOAT with cache invalidation', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.hset('hash', 'amount', '1', 'stable', '2');
+    engine.hgetall('hash');
+
+    assert.equal(engine.hsetnx('hash', 'stable', 'ignored'), 0);
+    assert.equal(cache.stats.entries, 1);
+
+    assert.equal(engine.hsetnx('hash', 'added', '3'), 1);
+    assert.equal(cache.stats.entries, 0);
+    engine.hgetall('hash');
+
+    assert.deepEqual(handleHmset(engine, ['hash', 'stable', '4']), { simple: 'OK' });
+    assert.equal(cache.stats.entries, 0);
+    engine.hgetall('hash');
+
+    assert.equal(engine.hincrbyfloat('hash', 'amount', '0.5').toString(), '1.5');
+    assert.equal(cache.stats.entries, 0);
+    db.close();
+  });
+
+  it('uses cache for HSTRLEN and HRANDFIELD while HSCAN remains storage-paginated', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.hset('hash', 'a', 'value-a', 'b', 'value-b');
+    engine.hgetall('hash');
+    const warmed = cache.stats;
+
+    assert.equal(engine.hstrlen('hash', 'a'), 7);
+    assert.equal(cache.stats.hits, warmed.hits + 1);
+
+    const beforeScan = cache.stats;
+    assert.equal(engine.hscan('hash', 0, { count: 1 }).values.length, 2);
+    assert.equal(cache.stats.hits, beforeScan.hits);
+    assert.equal(cache.stats.misses, beforeScan.misses);
+    assert.equal(cache.stats.entries, 1);
+
+    const beforeRandom = cache.stats.hits;
+    assert.ok(['a', 'b'].includes(engine.hrandfield('hash').toString()));
+    assert.equal(cache.stats.hits, beforeRandom + 1);
+
+    engine.hset('cold-random', 'a', '1', 'b', '2');
+    const beforePopulate = cache.stats.entries;
+    engine.hrandfield('cold-random');
+    assert.equal(cache.stats.entries, beforePopulate + 1);
+    db.close();
+  });
+
+  it('invalidates cache for hash-field expiration writes', () => {
+    const { db, cache, engine } = cachedEngine();
+    engine.hset('hash', 'field', 'value');
+    engine.hgetall('hash');
+    assert.equal(cache.stats.entries, 1);
+
+    assert.deepEqual(engine.hexpire('hash', 5_000, ['field']), [1]);
+    assert.equal(cache.stats.entries, 0);
+    db.close();
+  });
+
+  it('keeps cache on TTL reads unless lazy expiration deletes a field', () => {
+    const { db, cache, engine, advance, clock } = cachedEngine();
+    engine.hset('persistent', 'field', 'value');
+    engine.hgetall('persistent');
+
+    assert.deepEqual(engine.httl('persistent', ['field']), [-1]);
+    assert.deepEqual(engine.hpttl('persistent', ['field']), [-1]);
+    assert.deepEqual(engine.hexpiretime('persistent', ['field']), [-1]);
+    assert.deepEqual(engine.hexpiretime('persistent', ['field'], { milliseconds: true }), [-1]);
+    assert.equal(cache.stats.entries, 1);
+
+    const writer = createEngine({ db, clock });
+    writer.hexpire('persistent', 1_500, ['field']);
+    advance(501);
+
+    assert.equal(cache.stats.entries, 1);
+    assert.deepEqual(engine.hpttl('persistent', ['field']), [-2]);
+    assert.equal(cache.stats.entries, 0);
     db.close();
   });
 
@@ -332,12 +471,38 @@ describe('Engine hash field TTL', () => {
     assert.deepEqual(engine.httl('h', [Buffer.from('f1')]), [-1]);
   });
 
-  it('HINCRBY clears a field TTL', () => {
+  it('HINCRBY and HINCRBYFLOAT preserve a field TTL', () => {
     const { engine } = makeEngine(1_000_000);
     engine.hset('h', 'n', '1');
     engine.hexpire('h', engine._clock() + 5000, [Buffer.from('n')]);
     engine.hincrby('h', 'n', 2);
-    assert.deepEqual(engine.httl('h', [Buffer.from('n')]), [-1]);
+    assert.deepEqual(engine.httl('h', [Buffer.from('n')]), [5]);
+    engine.hincrbyfloat('h', 'n', '0.5');
+    assert.deepEqual(engine.httl('h', [Buffer.from('n')]), [5]);
+  });
+
+  it('HSETNX treats an expired field as absent', () => {
+    const { engine, advance } = makeEngine(1_000_000);
+    engine.hset('h', 'field', 'old');
+    engine.hexpire('h', engine._clock() + 1000, [Buffer.from('field')]);
+    advance(2000);
+    assert.equal(engine.hsetnx('h', 'field', 'new'), 1);
+    assert.equal(engine.hget('h', 'field').toString(), 'new');
+    assert.deepEqual(engine.httl('h', [Buffer.from('field')]), [-1]);
+  });
+
+  it('reports hash field TTL and expiry in seconds and milliseconds', () => {
+    const { engine } = makeEngine(1_000_000);
+    engine.hset('h', 'field', 'value', 'persistent', 'value');
+    engine.hexpire('h', 1_012_345, [Buffer.from('field')]);
+    assert.deepEqual(engine.hpttl('h', [Buffer.from('field')]), [12_345]);
+    assert.deepEqual(engine.hexpiretime('h', [Buffer.from('field')]), [1_012]);
+    assert.deepEqual(
+      engine.hexpiretime('h', [Buffer.from('field')], { milliseconds: true }),
+      [1_012_345]
+    );
+    assert.deepEqual(engine.hexpiretime('h', [Buffer.from('persistent')]), [-1]);
+    assert.deepEqual(engine.hexpiretime('h', [Buffer.from('missing')]), [-2]);
   });
 
   it('HDEL removes field TTL row too (no leak)', () => {

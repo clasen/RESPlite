@@ -69,6 +69,19 @@ describe('COMMAND integration', () => {
     }
   });
 
+  it('COMMAND INFO reports hash arities and write flags', async () => {
+    const names = ['HSET', 'HSETNX', 'HMSET', 'HINCRBYFLOAT', 'HSCAN', 'HEXPIRE', 'HPTTL', 'HPERSIST'];
+    const reply = await sendCommand(port, argv('COMMAND', 'INFO', ...names));
+    const docs = tryParseValue(reply, 0).value;
+    assert.deepEqual(docs.map((doc) => doc[1]), [-4, 4, -4, 4, -3, -6, -5, -5]);
+    const flags = new Map(docs.map((doc) => [doc[0].toString('utf8'), doc[2].map((flag) => flag.toString('utf8'))]));
+    for (const name of ['hset', 'hsetnx', 'hmset', 'hincrbyfloat', 'hexpire', 'hpersist']) {
+      assert.ok(flags.get(name).includes('write'), `${name} should be a write command`);
+    }
+    assert.ok(flags.get('hscan').includes('readonly'));
+    assert.ok(flags.get('hpttl').includes('readonly'));
+  });
+
   it('COMMAND INFO unknown returns empty array', async () => {
     const reply = await sendCommand(port, argv('COMMAND', 'INFO', 'NOSUCHCOMMAND'));
     const v = tryParseValue(reply, 0).value;
