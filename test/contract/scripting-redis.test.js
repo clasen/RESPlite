@@ -6,12 +6,12 @@ import { once } from 'node:events';
 import { performance } from 'node:perf_hooks';
 import { LuaFactory } from 'wasmoon';
 import fengari from 'fengari';
-import { createClient } from 'redis';
+import { createClient, commandOptions } from 'redis';
 import { createRESPlite } from '../../src/embed.js';
 import { createWasmoonScripting, createFengariScripting } from '../../src/scripting/index.js';
 import { USERNAME_SCRIPT } from '../helpers/scripting.js';
 
-it('matches Redis username results and stored hashes, and measures EVAL/EVALSHA latency', { timeout: 20000 }, async (t) => {
+it('matches Redis scripting results and stored data, and measures EVAL/EVALSHA latency', { timeout: 20000 }, async (t) => {
   const dir = await mkdtemp('/tmp/resplite-lua-');
   const socket = `${dir}/redis.sock`;
   const servers = [];
@@ -66,6 +66,67 @@ it('matches Redis username results and stored hashes, and measures EVAL/EVALSHA 
   for (const client of clients) {
     await client.connect();
   }
+
+  const bytes = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
+  const contracts = [
+    {
+      name: 'RESP2 conversion and array holes',
+      source: 'return {true,false,1.9,-1.9,{1,nil,3},redis.status_reply("OK")}',
+      expected: [1, null, 1, -1, [1], 'OK'],
+    },
+    {
+      name: 'binary command arguments and replies',
+      source: 'redis.call("SET",KEYS[1],ARGV[1]); return redis.call("GET",KEYS[1])',
+      options: { keys: ['contract:binary'], arguments: [bytes] },
+      binary: true,
+      expected: bytes,
+    },
+    {
+      name: 'large integer command replies',
+      source: 'redis.call("SET",KEYS[1],ARGV[1]); return {redis.call("INCR",KEYS[1]),redis.call("GET",KEYS[1])}',
+      options: { keys: ['contract:number'], arguments: ['4294967295'] },
+      expected: [4294967296, '4294967296'],
+    },
+    {
+      name: 'protected command errors and continuation',
+      source: 'redis.call("SET",KEYS[1],"saved"); local e=redis.pcall("HGET",KEYS[1],"f"); return {string.sub(e.err,1,9),redis.call("GET",KEYS[1])}',
+      options: { keys: ['contract:error'] },
+      expected: ['WRONGTYPE', 'saved'],
+    },
+    {
+      name: 'protected Lua errors',
+      source: 'local ok,e=pcall(function() error("stop",0) end); return {ok,e}',
+      expected: [null, 'stop'],
+    },
+    {
+      name: 'first return value only',
+      source: 'return ARGV[1],ARGV[2]',
+      options: { arguments: ['first', 'second'] },
+      expected: 'first',
+    },
+  ];
+  for (const scenario of contracts) {
+    await t.test(scenario.name, async () => {
+      for (const client of clients) {
+        const sha = await client.scriptLoad(scenario.source);
+        const replyOptions = commandOptions({ returnBuffers: scenario.binary === true });
+        assert.deepEqual(await client.eval(replyOptions, scenario.source, scenario.options), scenario.expected);
+        assert.deepEqual(await client.evalSha(replyOptions, sha, scenario.options), scenario.expected);
+      }
+    });
+  }
+  await t.test('preserves writes and cached source after runtime errors', async () => {
+    const source = 'redis.call("SET",KEYS[1],"saved"); return redis.call("HGET",KEYS[1],"f")';
+    const sha = await clients[0].scriptLoad(source);
+    for (const client of clients) {
+      const options = { keys: ['contract:failed'] };
+      await assert.rejects(client.eval(source, options), /WRONGTYPE/);
+      assert.deepEqual(await client.scriptExists([sha]), [true]);
+      assert.equal(await client.get('contract:failed'), 'saved');
+      await assert.rejects(client.evalSha(sha, options), /WRONGTYPE/);
+      assert.equal(await client.eval('return 42'), 42);
+    }
+  });
 
   const scenarios = [
     { name: 'initial', args: ['a', 'set', 'Martin'] },

@@ -104,6 +104,71 @@ If you want a tiny in-process smoke test that starts RESPLite and connects with 
 
 ### Optional Lua scripting
 
+#### Fengari adapter (trusted scripts)
+
+Start with Fengari for trusted application scripts. `resplite/scripting` exports `createFengariScripting(fengari, options)`, a stable adapter for application-controlled, trusted scripts, tested with `fengari@0.1.5`. Only enable it where callers allowed to execute or load scripts are trusted. Install Fengari in the consuming application; RESPLite does not import or install it at runtime. Both Lua libraries are development dependencies of RESPLite for testing only.
+
+```bash
+npm install fengari@0.1.5
+```
+
+```javascript
+import fengari from 'fengari';
+import { createRESPlite } from 'resplite/embed';
+import { createFengariScripting } from 'resplite/scripting';
+
+const srv = await createRESPlite({
+  db: './data.db',
+  scripting: createFengariScripting(fengari),
+});
+```
+
+Fengari needs no asynchronous module initialization. The commands, source cache, RESP2 conversions, command policy, atomic execution and lifecycle described below apply to both adapters.
+
+**The supported scope has these resource and compatibility limits:**
+
+- Fengari implements Lua 5.3 with 32-bit integers and double-precision floats. Integer arithmetic can wrap at 32 bits; it is not interchangeable with Lua 5.4 or Redis Lua 5.1 for all scripts.
+- Memory belongs to the JavaScript garbage collector. There is no per-state memory cap; passing `maxMemoryBytes` is rejected explicitly.
+- Instruction hooks interrupt yieldable Lua loops. In native callbacks such as `table.sort` comparators, interruption raises a catchable Lua error. A script that repeatedly catches it can keep running past `timeoutMs`; commands after the deadline are refused, but execution is not guaranteed to terminate. Native operations and synchronous SQLite calls also cannot be preempted.
+
+#### Shared scripting behavior
+
+This enables `EVAL script numkeys [keys...] [args...]`, `EVALSHA sha numkeys [keys...] [args...]`, `SCRIPT LOAD`, `SCRIPT EXISTS`, and `SCRIPT FLUSH [SYNC]` for that instance. Without the plugin, these commands remain unsupported and are absent from `COMMAND`. `SCRIPT FLUSH ASYNC` is not supported.
+
+Scripts receive `KEYS`, `ARGV`, `redis.call`, `redis.pcall`, `redis.error_reply`, and `redis.status_reply`. `redis.call` raises command errors; `redis.pcall` returns `{err=message}`. Missing values become Lua `false`; returned `false`/`nil` becomes RESP null, `true` becomes `1`, and numeric replies are truncated to integers. Numeric replies outside JavaScript's safe integer range are rejected. Arrays stop at the first Lua `nil`; nested status/error replies are supported. Keys, arguments, source and bulk replies preserve arbitrary bytes, including NUL and invalid UTF-8. Error/status messages are text with line breaks replaced by spaces.
+
+Available commands inside scripts are the implemented string, hash, set, non-blocking list, sorted-set, key and TTL commands, plus `PING` and `ECHO`. Administrative commands, Pub/Sub, `FT.*`, blocking commands and nested scripting are rejected. Existing command rename/disable rules also apply inside scripts. Hooks and `MONITOR` report the outer invocation, not each internal command.
+
+Each execution has a fresh Lua state. Basic functions (`assert`, `error`, `ipairs`, `next`, `pairs`, `pcall`, `select`, `tonumber`, `tostring`, `type`, `xpcall`) and the `string`, `table`, and `math` libraries are available, except `string.dump`. Filesystem, OS, JavaScript, module loading, metatable access, coroutines and external bytecode are not exposed.
+
+The trusted internal bootstrap is compiled once per supplied Lua module and reused as bytecode. User scripts remain text-only and are compiled for each execution; `EVALSHA` reuses the cached SHA-1 without hashing the source again.
+
+Scripts execute synchronously: other clients of the same server cannot interleave commands, TTL checks use the script's starting time, and blocked list consumers wake after execution finishes. **Errors and timeouts preserve writes already performed.** Atomic execution does not imply rollback or isolation from other processes independently opening the SQLite file.
+
+`EVAL` and `SCRIPT LOAD` cache successfully compiled source by SHA-1; execution errors do not remove it. The cache is per plugin, uses LRU eviction, and disappears on flush, close or restart. `EVALSHA` avoids transferring source but still compiles it in a fresh state; a missing or evicted hash returns `NOSCRIPT`. `SCRIPT EXISTS` does not refresh LRU order.
+
+Limits are centralized in `src/scripting/config.js`. Override only the required values in the second argument to `createFengariScripting(fengari, options)` or `createWasmoonScripting(luaModule, options)`:
+
+| Option | Default | Applies to |
+| --- | --- | --- |
+| `timeoutMs` | 1,000 | Execution budget, checked during Lua instructions and between commands |
+| `maxMemoryBytes` | 16 MiB | Lua state allocations (Wasmoon only; rejected by Fengari) |
+| `maxScriptBytes` | 256 KiB | Individual source size |
+| `maxCachedScripts` | 256 | Cached source count |
+| `maxCacheBytes` | 4 MiB | Total cached source bytes |
+
+All limits must be positive safe integers. A script larger than either source/cache byte limit is rejected before execution. Returned tables are limited to 128 levels and cycles are rejected. With Wasmoon, timeouts cannot be suppressed by Lua `pcall`/`xpcall`; Fengari has the timeout limitations described above. Neither adapter can interrupt a synchronous SQLite operation or a native Lua operation already running. Wasmoon memory limits do not cap the Node process, command results in JavaScript, or the entire shared WebAssembly module.
+
+`createRESPlite()` and synchronous `startServer()` both accept the prepared `scripting` option. They own the plugin and close it on shutdown or startup failure. One plugin can belong to only one server; to use the same Lua module in a group, create a separate plugin for each instance. Closed plugins cannot be reused.
+
+For manual wiring, pass `{ pubSub, scripting }` as the fifth argument to `handleConnection()`, reuse the same engine/plugin for that server, and call `scripting.close()` during teardown. Closing is idempotent; the injected Lua module remains owned by the application. Plain CLI startup does not load a plugin automatically; use a JavaScript launcher to prepare one.
+
+The adapters provide Lua 5.3 (Fengari) or Lua 5.4 (Wasmoon) scripting subsets, not full compatibility with Redis Lua 5.1. `cjson`, `cmsgpack`, `bit`, `SCRIPT KILL`, `BUSY`, Redis Functions, read-only scripting variants and persistent scripts are not implemented.
+
+#### Wasmoon adapter (resource limits)
+
+Use Wasmoon when a per-state memory cap and a protected-call-resistant timeout are required.
+
 Install Wasmoon in the application that hosts RESPLite. RESPLite does not install or import it at runtime; the adapter is tested with `wasmoon@1.16.0` (Lua 5.4).
 
 ```bash
@@ -122,66 +187,9 @@ const srv = await createRESPlite({
 });
 ```
 
-This enables `EVAL script numkeys [keys...] [args...]`, `EVALSHA sha numkeys [keys...] [args...]`, `SCRIPT LOAD`, `SCRIPT EXISTS`, and `SCRIPT FLUSH [SYNC]` for that instance. Without the plugin, these commands remain unsupported and are absent from `COMMAND`. `SCRIPT FLUSH ASYNC` is not supported.
+#### Scripting benchmark
 
-Scripts receive `KEYS`, `ARGV`, `redis.call`, `redis.pcall`, `redis.error_reply`, and `redis.status_reply`. `redis.call` raises command errors; `redis.pcall` returns `{err=message}`. Missing values become Lua `false`; returned `false`/`nil` becomes RESP null, `true` becomes `1`, and numeric replies are truncated to integers. Numeric replies outside JavaScript's safe integer range are rejected. Arrays stop at the first Lua `nil`; nested status/error replies are supported. Keys, arguments, source and bulk replies preserve arbitrary bytes, including NUL and invalid UTF-8. Error/status messages are text with line breaks replaced by spaces.
-
-Available commands inside scripts are the implemented string, hash, set, non-blocking list, sorted-set, key and TTL commands, plus `PING` and `ECHO`. Administrative commands, Pub/Sub, `FT.*`, blocking commands and nested scripting are rejected. Existing command rename/disable rules also apply inside scripts. Hooks and `MONITOR` report the outer invocation, not each internal command.
-
-Each execution has a fresh Lua state. Basic functions (`assert`, `error`, `ipairs`, `next`, `pairs`, `pcall`, `select`, `tonumber`, `tostring`, `type`, `xpcall`) and the `string`, `table`, and `math` libraries are available, except `string.dump`. Filesystem, OS, JavaScript, module loading, metatable access, coroutines and external bytecode are not exposed.
-
-The trusted internal bootstrap is compiled once per supplied Wasmoon module and reused as bytecode. User scripts remain text-only and are compiled for each execution; `EVALSHA` reuses the cached SHA-1 without hashing the source again.
-
-Scripts execute synchronously: other clients of the same server cannot interleave commands, TTL checks use the script's starting time, and blocked list consumers wake after execution finishes. **Errors and timeouts preserve writes already performed.** Atomic execution does not imply rollback or isolation from other processes independently opening the SQLite file.
-
-`EVAL` and `SCRIPT LOAD` cache successfully compiled source by SHA-1; execution errors do not remove it. The cache is per plugin, uses LRU eviction, and disappears on flush, close or restart. `EVALSHA` avoids transferring source but still compiles it in a fresh state; a missing or evicted hash returns `NOSCRIPT`. `SCRIPT EXISTS` does not refresh LRU order.
-
-Limits are centralized in `src/scripting/config.js`. Override only the required values in the second argument to `createWasmoonScripting(luaModule, options)`:
-
-| Option | Default | Applies to |
-| --- | --- | --- |
-| `timeoutMs` | 1,000 | Execution budget, checked during Lua instructions and between commands |
-| `maxMemoryBytes` | 16 MiB | Lua state allocations |
-| `maxScriptBytes` | 256 KiB | Individual source size |
-| `maxCachedScripts` | 256 | Cached source count |
-| `maxCacheBytes` | 4 MiB | Total cached source bytes |
-
-All limits must be positive safe integers. A script larger than either source/cache byte limit is rejected before execution. Returned tables are limited to 128 levels and cycles are rejected. Timeouts cannot be suppressed by Lua `pcall`/`xpcall`, but cannot interrupt a synchronous SQLite operation or a native Lua operation already running. Memory limits do not cap the Node process, command results in JavaScript, or the entire shared WebAssembly module.
-
-`createRESPlite()` and synchronous `startServer()` both accept the prepared `scripting` option. They own the plugin and close it on shutdown or startup failure. One plugin can belong to only one server; to use the same Wasmoon module in a group, call `createWasmoonScripting(luaModule)` separately for each instance. Closed plugins cannot be reused.
-
-For manual wiring, pass `{ pubSub, scripting }` as the fifth argument to `handleConnection()`, reuse the same engine/plugin for that server, and call `scripting.close()` during teardown. Closing is idempotent; the injected Wasmoon module remains owned by the application. Plain CLI startup does not load a plugin automatically; use a JavaScript launcher to prepare one.
-
-This is a bounded Lua 5.4 scripting subset, not full compatibility with Redis Lua 5.1. `cjson`, `cmsgpack`, `bit`, `SCRIPT KILL`, `BUSY`, Redis Functions, read-only scripting variants and persistent scripts are not implemented.
-
-#### Experimental Fengari adapter
-
-For benchmarks and trusted scripts, `resplite/scripting` also exports `createFengariScripting(fengari, options)`, tested with `fengari@0.1.5`. Install Fengari in the consuming application; RESPLite does not import or install it at runtime. Both Lua libraries are development dependencies of RESPLite for testing only.
-
-```bash
-npm install fengari@0.1.5
-```
-
-```javascript
-import fengari from 'fengari';
-import { createRESPlite } from 'resplite/embed';
-import { createFengariScripting } from 'resplite/scripting';
-
-const srv = await createRESPlite({
-  db: './data.db',
-  scripting: createFengariScripting(fengari),
-});
-```
-
-Fengari needs no asynchronous module initialization. The adapter shares commands, source cache, RESP2 conversions, command policy, atomic execution and lifecycle with Wasmoon. It also creates a fresh state per execution, caches only the internal bootstrap bytecode, and rejects external bytecode. The same source/cache limits and `timeoutMs` default apply.
-
-**The experimental adapter does not provide Wasmoon's resource isolation guarantees:**
-
-- Fengari implements Lua 5.3 with 32-bit integers and double-precision floats. Integer arithmetic can wrap at 32 bits; it is not interchangeable with Lua 5.4 or Redis Lua 5.1 for all scripts.
-- Memory belongs to the JavaScript garbage collector. There is no per-state memory cap; passing `maxMemoryBytes` is rejected explicitly.
-- Instruction hooks interrupt yieldable Lua loops. In native callbacks such as `table.sort` comparators, interruption raises a catchable Lua error. A script that repeatedly catches it can keep running past `timeoutMs`; commands after the deadline are refused, but execution is not guaranteed to terminate. Native operations and synchronous SQLite calls also cannot be preempted.
-
-Use Wasmoon when the per-state memory cap and protected-call-resistant timeout are required. Fengari performance measurements should run in a child process with an external watchdog; they do not establish equivalent compatibility or resource limits.
+Fengari performance measurements should run in a child process with an external watchdog; they do not establish equivalent compatibility or resource limits.
 
 From a development checkout, run the comparison against Redis on `127.0.0.1:6379` with:
 
@@ -863,7 +871,7 @@ RESPlite has one logical database, so `FLUSHDB` and `FLUSHALL` have the same eff
 ### Not supported (v1)
 
 - Streams (XADD, XRANGE, etc.)
-- Full Redis Lua 5.1 compatibility (optional Lua 5.4 scripting is available through the Wasmoon adapter)
+- Full Redis Lua 5.1 compatibility (optional scripting is available through Fengari (Lua 5.3) or Wasmoon (Lua 5.4))
 - Transactions (MULTI, EXEC, WATCH)
 - BRPOPLPUSH, BLMOVE (blocking list moves)
 - SELECT (multiple logical DBs)

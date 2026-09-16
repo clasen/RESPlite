@@ -14,7 +14,7 @@ export function createWasmoonScripting(luaModule, options = {}) {
     runLua(luaModule, source, keys, args, config, call, compileOnly, onCompiled), config);
 }
 
-/** Experimental adapter for trusted scripts; Fengari has no per-state memory limit. */
+/** Stable adapter for trusted scripts; Fengari has no per-state memory limit. */
 export function createFengariScripting(fengari, options = {}) {
   if (typeof fengari?.lua?.lua_newstate !== 'function'
     || typeof fengari?.lauxlib?.luaL_loadbufferx !== 'function'

@@ -81,3 +81,75 @@ it('interrupts yieldable protected loops and recovers under an external watchdog
   assert.equal(child.error, undefined, child.error?.message);
   assert.equal(child.status, 0, child.stderr + child.stdout);
 });
+
+it('refuses commands after the deadline even inside a native callback', () => {
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import {performance} from 'node:perf_hooks';
+    import fengari from 'fengari';
+    import {runFengari} from './src/scripting/fengari-runtime.js';
+    import {FENGARI_DEFAULTS} from './src/scripting/config.js';
+    const commands = [];
+    const config = {...FENGARI_DEFAULTS, timeoutMs:100};
+    const source = Buffer.from(\`
+      table.sort({2,1}, function()
+        redis.call('SET', 'before', 'saved')
+        redis.pcall('SET', 'after', 'forbidden')
+        return false
+      end)
+    \`);
+    assert.throws(() => runFengari(fengari, source, [], [], config, (argv) => {
+      commands.push(argv.map(String));
+      const until = performance.now() + config.timeoutMs;
+      while (performance.now() < until) {}
+      return {simple:'OK'};
+    }), /timed out/);
+    assert.deepEqual(commands, [['SET', 'before', 'saved']]);
+    assert.equal(runFengari(fengari, Buffer.from('return 42'), [], [], FENGARI_DEFAULTS, () => null), 42);
+  `], { cwd: new URL('../..', import.meta.url), encoding: 'utf8', timeout: 5000 });
+  assert.equal(child.error, undefined, child.error?.message);
+  assert.equal(child.status, 0, child.stderr + child.stdout);
+});
+
+it('allows GC to reclaim states after repeated success, errors and timeouts', (t) => {
+  const child = spawnSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import {setImmediate} from 'node:timers/promises';
+    import fengari from 'fengari';
+    import {runFengari} from './src/scripting/fengari-runtime.js';
+    import {FENGARI_DEFAULTS} from './src/scripting/config.js';
+    const states = [];
+    let closes = 0;
+    const tracked = {
+      ...fengari,
+      lauxlib: {...fengari.lauxlib, luaL_newstate() {
+        const state = fengari.lauxlib.luaL_newstate();
+        states.push(new WeakRef(state));
+        return state;
+      }},
+      lua: {...fengari.lua, lua_close(state) { closes++; fengari.lua.lua_close(state); }},
+    };
+    const run = (source, config = FENGARI_DEFAULTS) =>
+      runFengari(tracked, Buffer.from(source), [], [], config, () => null);
+    const samples = [];
+    for (let batch = 0; batch < 4; batch++) {
+      for (let i = 0; i < 50; i++) {
+        assert.equal(run('local a={} for i=1,1000 do a[i]=string.rep("x",128) end return #a'), 1000);
+        assert.throws(() => run('return )'), /user_script/);
+        assert.throws(() => run('local a=string.rep("x",65536); error("stop")'), /stop/);
+        assert.throws(() => run('local a={} a[1]=a return a'), /cyclic/);
+      }
+      assert.throws(() => run('while true do end', {...FENGARI_DEFAULTS, timeoutMs:50}), /timed out/);
+      assert.equal(run('return 42'), 42);
+      await setImmediate();
+      global.gc();
+      assert.equal(states.filter((ref) => ref.deref() !== undefined).length, 0);
+      assert.equal(closes, states.length);
+      samples.push(process.memoryUsage().heapUsed);
+    }
+    console.log(JSON.stringify({executions:states.length, heapUsedAfterGC:samples}));
+  `], { cwd: new URL('../..', import.meta.url), encoding: 'utf8', timeout: 15000 });
+  assert.equal(child.error, undefined, child.error?.message);
+  assert.equal(child.status, 0, child.stderr + child.stdout);
+  t.diagnostic(child.stdout.trim());
+});

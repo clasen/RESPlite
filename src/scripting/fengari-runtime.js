@@ -4,7 +4,7 @@ import { LUA, BOOTSTRAP, cleanError, createReplyCodec } from './lua-common.js';
 
 const bootstrapBytecode = new WeakMap();
 
-/** Experimental synchronous runner. Memory is managed by the JavaScript GC. */
+/** Synchronous runner for trusted scripts. Memory is managed by the JavaScript GC. */
 export function runFengari(fengari, source, keys, args, config, call, compileOnly = false, onCompiled = () => {}) {
   const { lua, lauxlib, lualib, to_luastring: bytes } = fengari;
   const deadline = performance.now() + config.timeoutMs;
@@ -91,7 +91,7 @@ export function runFengari(fengari, source, keys, args, config, call, compileOnl
       if (lua.lua_isyieldable(L)) lua.lua_yield(L, 0);
       else {
         // Fengari cannot yield across native callbacks. This error is catchable
-        // by Lua, so the experimental adapter is only suitable for trusted code.
+        // by Lua, so this adapter is only suitable for trusted code.
         pushBytes(L, timeoutError().message);
         lua.lua_error(L);
       }
