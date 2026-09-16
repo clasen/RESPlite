@@ -42,7 +42,7 @@ There is no embedded direct JavaScript API in the initial scope.
 The following are explicitly out of scope for v1:
 
 - Streams
-- Lua scripting
+- Full Redis Lua 5.1 scripting compatibility (optional bounded Lua 5.4 scripting is described in spec 02)
 - Redis Cluster
 - Replication
 - MULTI / EXEC / WATCH

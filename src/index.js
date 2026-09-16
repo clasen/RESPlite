@@ -28,49 +28,85 @@ const DEFAULT_PORT = 6379;
  * @param {false | {enabled?: boolean, maxEntries?: number, maxBytes?: number, maxHashFields?: number, maxHashBytes?: number, maxSetMembers?: number, maxSetBytes?: number, maxListItems?: number, maxListBytes?: number, maxZsetMembers?: number, maxZsetBytes?: number}} [options.cache] Hot data cache configuration, or false to disable it.
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to close server and DB. Set false if you handle shutdown yourself.
  * @param {{ rename?: Record<string, string>, disabled?: string[] } | null} [options.commandPolicy] Optional: rename/disable commands for hardening.
+ * @param {object} [options.scripting] Prepared plugin from resplite/scripting.
  */
 export function startServer(options = {}) {
+  const scripting = options.scripting ?? null;
+  const scriptingOwner = {};
+  scripting?.attach(scriptingOwner);
   const dbPath = options.dbPath ?? process.env.RESPLITE_DB ?? DEFAULT_DB_PATH;
   const port = options.port ?? parseInt(process.env.RESPLITE_PORT || String(DEFAULT_PORT), 10);
   const pragmaTemplate = options.pragmaTemplate ?? process.env.RESPLITE_PRAGMA_TEMPLATE ?? 'default';
   const gracefulShutdown = options.gracefulShutdown !== false;
 
-  const db = openDb(dbPath, { pragmaTemplate, pragma: options.pragma });
-  const cache = options.cache === false
-    ? createCache({ enabled: false })
-    : createCache({ enabled: true, ...(options.cache ?? {}) });
-  const engine = createEngine({ db, cache });
-  const sweeper = createExpirationSweeper({
-    db,
-    clock: () => Date.now(),
-    sweepIntervalMs: 1000,
-    maxKeysPerSweep: 500,
-  });
-  sweeper.start();
-
+  let db;
+  let sweeper;
+  let server;
   const connections = new Set();
-  const server = createServer({ engine, port, connections, commandPolicy: options.commandPolicy ?? null });
+  try {
+    db = openDb(dbPath, { pragmaTemplate, pragma: options.pragma });
+    const cache = options.cache === false
+      ? createCache({ enabled: false })
+      : createCache({ enabled: true, ...(options.cache ?? {}) });
+    const engine = createEngine({ db, cache });
+    sweeper = createExpirationSweeper({
+      db,
+      clock: () => Date.now(),
+      sweepIntervalMs: 1000,
+      maxKeysPerSweep: 500,
+    });
+    sweeper.start();
+
+    server = createServer({ engine, port, connections, commandPolicy: options.commandPolicy ?? null, scripting, scriptingOwner });
+  } catch (error) {
+    sweeper?.stop();
+    db?.close();
+    scripting?.close();
+    throw error;
+  }
+  let onSignal = null;
+  let released = false;
+  function release() {
+    if (released) return;
+    released = true;
+    if (onSignal) {
+      process.off('SIGTERM', onSignal);
+      process.off('SIGINT', onSignal);
+    }
+    sweeper.stop();
+    scripting?.close();
+    db.close();
+  }
+  server.once('close', release);
+  server.once('error', (error) => {
+    release();
+    throw error;
+  });
 
   if (gracefulShutdown) {
     let shuttingDown = false;
-    function shutdown() {
+    onSignal = () => {
       if (shuttingDown) return;
       shuttingDown = true;
       sweeper.stop();
       for (const socket of connections) socket.destroy();
       connections.clear();
       server.close(() => {
-        db.close();
         process.exit(0);
       });
-    }
-    process.on('SIGTERM', shutdown);
-    process.on('SIGINT', shutdown);
+    };
+    process.on('SIGTERM', onSignal);
+    process.on('SIGINT', onSignal);
   }
 
-  server.listen(port, () => {
-    console.log(`RESPLite listening on port ${port}, db: ${dbPath}`);
-  });
+  try {
+    server.listen(port, () => {
+      console.log(`RESPLite listening on port ${server.address().port}, db: ${dbPath}`);
+    });
+  } catch (error) {
+    release();
+    throw error;
+  }
 }
 
 const isCli = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));

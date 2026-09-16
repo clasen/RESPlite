@@ -116,10 +116,12 @@ import * as unsubscribe from './unsubscribe.js';
 import * as psubscribe from './psubscribe.js';
 import * as punsubscribe from './punsubscribe.js';
 import * as pubsub from './pubsub.js';
+import { SCRIPTING_COMMANDS } from '../scripting/commands.js';
 
 const COMPILED_POLICY_TAG = Symbol('compiled-command-policy');
 
 const HANDLERS = new Map([
+  ...[...SCRIPTING_COMMANDS].map((name) => [name, (e, a, ctx) => ctx.scripting.execute(name, e, a, ctx)]),
   ['PING', (e, a, ctx) => ping.handlePing(a, ctx)],
   ['ECHO', (e, a) => echo.handleEcho(a)],
   ['QUIT', (e, a) => quit.handleQuit()],
@@ -300,9 +302,10 @@ export function compileCommandPolicy(policy = {}) {
   };
 }
 
-function listVisibleCommandNames(policy) {
+function listVisibleCommandNames(policy, scripting) {
   const names = [];
   for (const name of HANDLERS.keys()) {
+    if (SCRIPTING_COMMANDS.has(name) && !scripting) continue;
     if (policy?.renamedOriginals?.has(name)) continue;
     if (policy?.disabledSet?.has(name)) continue;
     names.push(name);
@@ -329,6 +332,10 @@ export function resolveCommandName(inputCommand, policy = null) {
   return resolution.blocked ? null : resolution.resolvedCommand;
 }
 
+function stringifyArgv(argv) {
+  return argv.map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)));
+}
+
 /**
  * Dispatch command. Full argv: [commandNameBuf, ...argBuffers].
  * @param {object} engine
@@ -342,14 +349,13 @@ export function dispatch(engine, argv, context) {
   }
   const cmd = (Buffer.isBuffer(argv[0]) ? argv[0].toString('utf8') : String(argv[0])).toUpperCase();
   const args = argv.slice(1);
-  const argvStrings = argv.map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)));
   const policy = compileCommandPolicy(context?.commandPolicy);
   const commandResolution = resolveIncomingCommand(cmd, policy);
   if (commandResolution.blocked) {
     context?.onUnknownCommand?.({
       command: cmd,
       argsCount: args.length,
-      argv: argvStrings ?? [cmd],
+      argv: stringifyArgv(argv),
       clientAddress: context?.clientAddress ?? '',
       connectionId: context?.connectionId ?? 0,
     });
@@ -357,18 +363,18 @@ export function dispatch(engine, argv, context) {
   }
   const resolvedCommand = commandResolution.resolvedCommand;
   if (context) {
-    context.getCommandNames = () => listVisibleCommandNames(policy);
+    context.getCommandNames = () => listVisibleCommandNames(policy, context.scripting);
     context.resolveCommandForIntrospection = (name) => {
       if (!policy) return name;
       return policy.aliasToOriginal.get(String(name).toUpperCase()) ?? String(name).toUpperCase();
     };
   }
   const handler = HANDLERS.get(resolvedCommand);
-  if (!handler) {
+  if (!handler || (SCRIPTING_COMMANDS.has(resolvedCommand) && !context?.scripting)) {
     context?.onUnknownCommand?.({
       command: cmd,
       argsCount: args.length,
-      argv: argvStrings ?? [cmd],
+      argv: stringifyArgv(argv),
       clientAddress: context.clientAddress ?? '',
       connectionId: context.connectionId ?? 0,
     });
@@ -382,7 +388,7 @@ export function dispatch(engine, argv, context) {
       context?.onCommandError?.({
         command: cmd,
         error: result.error,
-        argv: argvStrings ?? [cmd],
+        argv: stringifyArgv(argv),
         clientAddress: context.clientAddress ?? '',
         connectionId: context.connectionId ?? 0,
       });
@@ -396,7 +402,7 @@ export function dispatch(engine, argv, context) {
     context?.onCommandError?.({
       command: cmd,
       error: errorMsg,
-      argv: argvStrings ?? [cmd],
+      argv: stringifyArgv(argv),
       clientAddress: context.clientAddress ?? '',
       connectionId: context.connectionId ?? 0,
     });

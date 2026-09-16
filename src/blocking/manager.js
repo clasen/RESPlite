@@ -29,6 +29,7 @@ export function createBlockingManager(engine, opts = {}) {
   /** @type {Map<string | number, Set<object>>} connectionId -> waiters for cancel */
   const waitersByConnection = new Map();
   let totalWaiters = 0;
+  let deferredKeys = null;
 
   function removeWaiterFromQueues(waiter) {
     for (const key of waiter.keys) {
@@ -145,6 +146,10 @@ export function createBlockingManager(engine, opts = {}) {
    */
   function wakeup(key) {
     const mapKey = toMapKey(key);
+    if (deferredKeys) {
+      deferredKeys.set(mapKey, Buffer.from(key));
+      return;
+    }
     const q = waitersByKey.get(mapKey);
     if (!q || q.length === 0) return;
     const ref = q[0];
@@ -176,6 +181,21 @@ export function createBlockingManager(engine, opts = {}) {
   }
 
   return {
+    deferWakeups() {
+      if (deferredKeys) throw new Error('Wakeups are already deferred');
+      deferredKeys = new Map();
+    },
+    flushWakeups() {
+      const pending = deferredKeys;
+      deferredKeys = null;
+      for (const [mapKey, key] of pending) {
+        let previousLength;
+        do {
+          previousLength = waitersByKey.get(mapKey)?.length ?? 0;
+          wakeup(key);
+        } while ((waitersByKey.get(mapKey)?.length ?? 0) < previousLength);
+      }
+    },
     registerWaiter,
     wakeup,
     cancel,

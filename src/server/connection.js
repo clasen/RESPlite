@@ -6,6 +6,7 @@ import { RESPReader } from '../resp/parser.js';
 import { compileCommandPolicy, dispatch, resolveCommandName } from '../commands/registry.js';
 import { encode, encodeSimpleString, encodeError } from '../resp/encoder.js';
 import { registerMonitorClient, unregisterMonitorClient, broadcastMonitorCommand } from './monitor.js';
+import { createPubSubOutput } from '../pubsub/output.js';
 
 let nextConnectionId = 0;
 const PUBSUB_MODE_COMMANDS = new Set([
@@ -17,13 +18,22 @@ const PUBSUB_MODE_COMMANDS = new Set([
  * @param {object} engine
  * @param {object} [hooks] Optional: onUnknownCommand, onCommandError, onSocketError
  * @param {object|null} [commandPolicy] Optional: command rename/disable policy.
- * @param {{ pubSub?: object }} [services] Shared connection services for this server instance.
+ * @param {{ pubSub?: object, scripting?: object, scriptingOwner?: object }} [services] Shared connection services for this server instance.
  */
 export function handleConnection(socket, engine, hooks = {}, commandPolicy = null, services = {}) {
+  services.scripting?.attach(services.scriptingOwner ?? engine);
   const reader = new RESPReader();
   const connectionId = ++nextConnectionId;
   const clientAddress = `${socket.remoteAddress ?? 'unknown'}:${socket.remotePort ?? 0}`;
   const compiledCommandPolicy = compileCommandPolicy(commandPolicy);
+  let pubSubOutput;
+
+  function writeResponse(buffer) {
+    if (pubSubOutput) return pubSubOutput.write(buffer);
+    if (!socket.writable || socket.destroyed) return false;
+    return socket.write(buffer);
+  }
+
   const context = {
     connectionId,
     clientAddress,
@@ -31,14 +41,11 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
     monitorMode: false,
     pubSubMode: false,
     pubSub: services.pubSub ?? null,
-    writeResponse(buf) {
-      if (socket.writable) socket.write(buf);
-    },
+    scripting: services.scripting ?? null,
+    writeResponse,
     writePubSub(value) {
-      if (!socket.writable) return false;
-      const accepted = socket.write(encode(value));
-      if (!accepted) socket.destroy();
-      return accepted;
+      pubSubOutput ??= createPubSubOutput(socket);
+      return pubSubOutput.write(encode(value));
     },
     onUnknownCommand: hooks.onUnknownCommand,
     onCommandError: hooks.onCommandError,
@@ -48,14 +55,14 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
 
   function writeResult(out) {
     if (out.quit) {
-      socket.write(encodeSimpleString('OK'));
-      socket.end();
+      writeResponse(encodeSimpleString('OK'));
+      if (pubSubOutput) pubSubOutput.end();
+      else socket.end();
       return true;
     }
     if (out.pushes) {
       for (const push of out.pushes) {
-        if (!socket.writable) return true;
-        socket.write(encode(push));
+        if (!context.writePubSub(push)) return true;
       }
       return false;
     }
@@ -69,7 +76,7 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
     } else {
       buf = encode(out.result);
     }
-    socket.write(buf);
+    writeResponse(buf);
     return false;
   }
 
@@ -77,14 +84,15 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
     reader.feed(chunk);
     const commands = reader.parseCommands();
     for (const argv of commands) {
+      if (socket.destroyed) return;
       const cmd = argv[0] ? argv[0].toString('utf8').toUpperCase() : '';
       const resolvedCommand = resolveCommandName(cmd, compiledCommandPolicy);
       if (context.monitorMode && resolvedCommand !== 'QUIT') {
-        socket.write(encodeError('ERR MONITOR mode only supports QUIT'));
+        writeResponse(encodeError('ERR MONITOR mode only supports QUIT'));
         continue;
       }
       if (context.pubSubMode && !PUBSUB_MODE_COMMANDS.has(resolvedCommand)) {
-        socket.write(encodeError(
+        writeResponse(encodeError(
           `ERR Can't execute '${cmd.toLowerCase()}': only SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PING and QUIT are allowed in this context`
         ));
         continue;
@@ -104,7 +112,7 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
         const { keys, kind, timeoutSeconds } = out.block;
         const blockingManager = engine._blockingManager;
         if (!blockingManager) {
-          socket.write(encodeError('ERR blocking not available'));
+          writeResponse(encodeError('ERR blocking not available'));
           continue;
         }
         const resolve = (value) => {
@@ -114,7 +122,7 @@ export function handleConnection(socket, engine, hooks = {}, commandPolicy = nul
         };
         const err = blockingManager.registerWaiter(keys, kind, timeoutSeconds, resolve, connectionId);
         if (err.error) {
-          socket.write(encodeError(err.error));
+          writeResponse(encodeError(err.error));
           continue;
         }
         socket.pause();

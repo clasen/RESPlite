@@ -33,6 +33,10 @@ export function encode(value) {
     }
     return Buffer.concat(parts);
   }
+  if (value && typeof value === 'object') {
+    if (value.simple !== undefined) return encodeSimpleString(value.simple);
+    if (value.error !== undefined) return encodeError(value.error);
+  }
   throw new TypeError('Cannot encode value: ' + typeof value);
 }
 

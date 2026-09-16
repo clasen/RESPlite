@@ -95,6 +95,7 @@ async function closeGroupServers(entries) {
  * @param {RESPliteHooks} [options.hooks]         Optional event hooks for observability (onUnknownCommand, onCommandError, onSocketError).
  * @param {boolean} [options.gracefulShutdown=true] If true, register SIGTERM/SIGINT to call close(). Set false if you handle shutdown yourself to avoid double handlers.
  * @param {{ rename?: Record<string, string>, disabled?: string[] } | null} [options.commandPolicy] Optional: rename/disable commands for hardening.
+ * @param {object} [options.scripting] Prepared plugin from resplite/scripting; owned and closed by this server.
  * @returns {Promise<{ port: number, host: string, close: () => Promise<void> }>}
  */
 export async function createRESPlite({
@@ -107,22 +108,26 @@ export async function createRESPlite({
   hooks = {},
   gracefulShutdown = true,
   commandPolicy = null,
+  scripting = null,
 } = {}) {
-  const compiledCommandPolicy = compileCommandPolicy(commandPolicy);
-  const db = openDb(dbPath, { pragmaTemplate, pragma });
-  const cache = cacheOptions === false
-    ? createCache({ enabled: false })
-    : createCache({ enabled: true, ...(cacheOptions ?? {}) });
-  const engine = createEngine({ db, cache });
-  const pubSub = createPubSubBroker();
+  const scriptingOwner = {};
+  scripting?.attach(scriptingOwner);
+  let db;
+  let server;
   const connections = new Set();
-
-  const server = net.createServer((socket) => {
-    connections.add(socket);
-    socket.once('close', () => connections.delete(socket));
-    handleConnection(socket, engine, hooks, compiledCommandPolicy, { pubSub });
-  });
   try {
+    const compiledCommandPolicy = compileCommandPolicy(commandPolicy);
+    db = openDb(dbPath, { pragmaTemplate, pragma });
+    const cache = cacheOptions === false
+      ? createCache({ enabled: false })
+      : createCache({ enabled: true, ...(cacheOptions ?? {}) });
+    const engine = createEngine({ db, cache });
+    const pubSub = createPubSubBroker();
+    server = net.createServer((socket) => {
+      connections.add(socket);
+      socket.once('close', () => connections.delete(socket));
+      handleConnection(socket, engine, hooks, compiledCommandPolicy, { pubSub, scripting, scriptingOwner });
+    });
     await new Promise((resolve, reject) => {
       const onError = (error) => {
         server.off('listening', onListening);
@@ -138,8 +143,9 @@ export async function createRESPlite({
       server.listen(port, host);
     });
   } catch (error) {
+    scripting?.close();
     try {
-      db.close();
+      db?.close();
     } catch (closeError) {
       throw new AggregateError(
         [error, closeError],
@@ -168,6 +174,7 @@ export async function createRESPlite({
       }
       connections.clear();
       server.close((error) => {
+        scripting?.close();
         if (error) {
           reject(error);
           return;

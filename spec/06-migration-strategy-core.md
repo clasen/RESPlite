@@ -53,7 +53,7 @@ Future near-term commands or features as documented in the respective spec files
 Features explicitly excluded from the roadmap for now, such as:
 
 - Streams
-- Lua
+- Full Redis Lua compatibility and migration of script caches (optional scripting is described in spec 02)
 - Cluster
 - Replication
 - Blocking commands (unless added per blocking spec)

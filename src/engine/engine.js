@@ -18,7 +18,9 @@ import { asKey, asValue } from '../util/buffers.js';
 
 export function createEngine(opts = {}) {
   const { db, cache } = opts;
-  const clock = opts.clock ?? (() => Date.now());
+  const sourceClock = opts.clock ?? (() => Date.now());
+  let scriptTime = null;
+  const clock = () => scriptTime ?? sourceClock();
   const keys = createKeysStorage(db);
   const strings = createStringsStorage(db, keys);
   const hashes = createHashesStorage(db, keys, { clock });
@@ -1274,6 +1276,18 @@ export function createEngine(opts = {}) {
       });
       invalidateCachedKey(k);
       invalidateCachedKey(nk);
+    },
+
+    runScript(fn) {
+      if (scriptTime !== null) throw new Error('ERR recursive scripting is not allowed');
+      scriptTime = sourceClock();
+      this._blockingManager.deferWakeups();
+      try {
+        return fn();
+      } finally {
+        scriptTime = null;
+        this._blockingManager.flushWakeups();
+      }
     },
 
     // Expose for storage/commands that need direct access

@@ -51,6 +51,12 @@ const HASH_ARITIES = new Map([
  */
 function docFor(name, canonicalName = name) {
   const lower = name.toLowerCase();
+  if (canonicalName === 'EVAL' || canonicalName === 'EVALSHA') {
+    return [lower, -3, ['noscript', 'movablekeys'], 0, 0, 0, ['@scripting', '@slow']];
+  }
+  if (canonicalName === 'SCRIPT') {
+    return [lower, -2, ['noscript'], 0, 0, 0, ['@scripting', '@slow']];
+  }
   const flags = PUBSUB_COMMANDS.has(canonicalName)
     ? ['pubsub']
     : WRITE_COMMANDS.has(canonicalName) ? ['write', 'fast'] : ['readonly', 'fast'];

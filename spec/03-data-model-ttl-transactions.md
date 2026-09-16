@@ -155,3 +155,9 @@ Set modifications must update:
 - metadata timestamps and versions
 - key existence if the set becomes empty
 - cache state
+
+### 16.4 Optional scripts
+
+Lua scripts execute synchronously without interleaving requests from other clients of the same server. Key and hash-field expiration use a fixed script-start clock. List pushes defer blocked-client wakeups until the script finishes, on success or error, so waiters observe the final state.
+
+Individual commands retain their existing SQLite transaction boundaries. A script is not wrapped in a rollback transaction: writes completed before a runtime error, memory failure or automatic timeout remain committed and visible. This guarantee does not cover independent processes opening the same database, nor whole-script crash durability. See spec 02 for the scripting surface and limits.

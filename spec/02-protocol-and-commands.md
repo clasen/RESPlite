@@ -128,6 +128,32 @@ While a RESP2 connection has active channel or pattern subscriptions, it accepts
 
 ---
 
+## 6.1 Optional scripting extension
+
+Scripting is enabled per server by injecting a prepared plugin from `resplite/scripting`. The application installs Wasmoon and supplies `await new LuaFactory().getLuaModule()` to `createWasmoonScripting()`. RESPLite has no production Wasmoon dependency. Existing startup signatures remain unchanged.
+
+The extension supports `EVAL script numkeys [keys...] [args...]`, `EVALSHA sha numkeys [keys...] [args...]`, `SCRIPT LOAD script`, `SCRIPT EXISTS sha [sha...]`, and `SCRIPT FLUSH [SYNC]`. Unsupported subcommands, including `ASYNC`, return errors. Without a plugin these commands remain unsupported and absent from `COMMAND`; with it, introspection reports scripting arities and movable keys for EVAL/EVALSHA.
+
+`KEYS` and `ARGV` are one-based Lua arrays. The bridge exposes `redis.call`, `redis.pcall`, `redis.error_reply` and `redis.status_reply`. It reuses existing data handlers under the server's command policy. The allowed command set is explicit in `src/scripting/commands.js`; administrative, blocking, Pub/Sub, FT.* and recursive scripting commands are excluded. Hooks and MONITOR observe the outer request only.
+
+RESP2 null becomes Lua false; Lua false/nil returns null, true returns integer 1, and finite numbers are truncated within JavaScript's safe integer range. Lua arrays stop at their first nil; status/error tables work at every array level. Cyclic replies and replies deeper than 128 tables fail. Keys, arguments, source and bulk strings are binary-safe. Error/status strings are sanitized single-line text.
+
+Each invocation creates and closes a Lua 5.4 state with basic functions and string/table/math libraries. No filesystem, OS, JavaScript, loaders, metatable APIs, coroutines or external bytecode are exposed. Only the trusted internal bootstrap is compiled once per supplied Wasmoon module and reused as bytecode. The source cache is per plugin, SHA-1 keyed, in-memory and LRU bounded. Valid EVAL source is cached before execution, even when execution fails; SCRIPT LOAD compiles without executing. EVALSHA reuses the known SHA-1, refreshes LRU and recompiles source; SCRIPT EXISTS does not refresh it. Missing/evicted hashes return NOSCRIPT. Closing or flushing clears the source cache.
+
+Operational limits and validation live in `src/scripting/config.js`: timeout 1,000 ms, Lua memory 16 MiB, source 256 KiB, 256 cached scripts and 4 MiB cached source, overridable through the adapter. Sources exceeding either individual or total cache byte capacity fail. Timeouts suspend execution or escape native callback boundaries and cannot be caught by Lua protected calls. Checks cannot preempt a synchronous SQLite/native Lua operation. Limits do not bound total host/WASM memory.
+
+The plugin is exclusively attached to one server. Servers close owned plugins on shutdown or startup failure; manual wiring closes explicitly. Shared Wasmoon modules are allowed with separate plugins. Full Lua 5.1 compatibility, auxiliary Redis libraries, SCRIPT KILL/BUSY, Functions and script persistence remain out of scope. See spec 03 for atomicity and error semantics.
+
+### Experimental Fengari adapter
+
+`createFengariScripting(fengari, options)` accepts the consumer's `fengari@0.1.5` module synchronously. Fengari is a development dependency only; the package never imports it at runtime. `plugin.js` owns the common command validation, source cache, dispatch and lifecycle. `lua-common.js` defines the shared bootstrap and RESP2 conversions; each runtime owns its state creation, byte transfer and interruption mechanism.
+
+This adapter is for trusted scripts and performance experiments. It implements the same scripting commands and fresh-state isolation using Lua 5.3, 32-bit integers and double-precision floats. Only the internal bootstrap bytecode is reused. Source size/count/cache limits and timeout defaults are shared through `FENGARI_DEFAULTS`; `maxMemoryBytes` is unsupported and rejected, because allocations are managed by the JavaScript GC.
+
+Fengari's instruction hook suspends yieldable loops. Inside native callbacks it raises a Lua error that protected calls can catch repeatedly, so the timeout is not a guaranteed termination boundary. The bridge refuses further commands after the deadline, and writes before failure remain applied. Native/SQLite calls cannot be preempted. Benchmarks use an external process watchdog; Wasmoon's stronger memory and timeout guarantees remain specific to its adapter.
+
+---
+
 ## 7. Commands Explicitly Not Supported in v1
 
 The following commands are out of scope in v1 and should return a clear unsupported-command error:
@@ -135,8 +161,6 @@ The following commands are out of scope in v1 and should return a clear unsuppor
 - `MULTI`
 - `EXEC`
 - `WATCH`
-- `EVAL`
-- `EVALSHA`
 - `XADD`
 - `XRANGE`
 - `XREAD`

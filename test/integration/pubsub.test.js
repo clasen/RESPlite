@@ -24,6 +24,12 @@ function createStreamingClient(port) {
         send(command) {
           socket.write(encode(command));
         },
+        pause() {
+          socket.pause();
+        },
+        resume() {
+          socket.resume();
+        },
         nextValue(timeoutMs = 2000) {
           if (queue.length > 0) return Promise.resolve(queue.shift());
           return new Promise((resolveValue, rejectValue) => {
@@ -234,6 +240,63 @@ describe('Pub/Sub integration', () => {
     } finally {
       await subscriber.close();
       await renamedServer.closeAsync();
+    }
+  });
+
+  it('delivers a buffered burst in order when a subscriber resumes reading', { timeout: 30000 }, async () => {
+    const subscriber = await createStreamingClient(port);
+    try {
+      subscriber.send(argv('SUBSCRIBE', 'paused'));
+      await subscriber.nextValue();
+      subscriber.pause();
+      for (let i = 0; i < 16; i++) {
+        const message = Buffer.alloc(1024 * 1024, i);
+        const receivers = parse(await sendCommand(port, [Buffer.from('PUBLISH'), Buffer.from('paused'), message]));
+        assert.equal(receivers, 1);
+      }
+      subscriber.resume();
+      for (let i = 0; i < 16; i++) {
+        const delivered = await subscriber.nextValue();
+        assert.equal(asString(delivered[0]), 'message');
+        assert.deepEqual(delivered[2], Buffer.alloc(1024 * 1024, i));
+      }
+      subscriber.send(argv('PING', 'after burst'));
+      assert.deepEqual((await subscriber.nextValue()).map(asString), ['pong', 'after burst']);
+    } finally {
+      await subscriber.close();
+    }
+  });
+
+  it('bounds a stalled subscriber without interrupting a healthy subscriber', { timeout: 30000 }, async () => {
+    const errors = [];
+    const isolatedServer = await createTestServer({
+      hooks: { onSocketError: ({ error }) => errors.push(error) },
+    });
+    const slow = await createStreamingClient(isolatedServer.port);
+    const healthy = await createStreamingClient(isolatedServer.port);
+    try {
+      slow.send(argv('SUBSCRIBE', 'burst'));
+      healthy.send(argv('SUBSCRIBE', 'burst'));
+      await slow.nextValue();
+      await healthy.nextValue();
+      slow.pause();
+
+      for (let i = 0; i < 64 && errors.length === 0; i++) {
+        const message = Buffer.alloc(1024 * 1024, i);
+        await sendCommand(isolatedServer.port, [Buffer.from('PUBLISH'), Buffer.from('burst'), message]);
+        const delivered = await healthy.nextValue();
+        assert.equal(asString(delivered[0]), 'message');
+        assert.deepEqual(delivered[2], message);
+      }
+
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0].code, 'PUBSUB_OUTPUT_LIMIT');
+      assert.equal(parse(await sendCommand(isolatedServer.port, argv('PUBLISH', 'burst', 'still alive'))), 1);
+      assert.deepEqual((await healthy.nextValue()).map(asString), ['message', 'burst', 'still alive']);
+    } finally {
+      await slow.close();
+      await healthy.close();
+      await isolatedServer.closeAsync();
     }
   });
 });
