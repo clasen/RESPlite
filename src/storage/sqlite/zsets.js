@@ -180,7 +180,7 @@ export function createZsetsStorage(db, keys) {
      * @returns {Buffer[] | Array<Buffer|string>} members or [member, score, ...]
      */
     rangeByRank(key, start, stop, options = {}) {
-      if (start >= 0 && stop >= 0) {
+      if (start >= 0 && stop >= 0 && stop < Number.MAX_SAFE_INTEGER) {
         if (start > stop) return [];
         const rows = rangeByRankStmt.all(key, stop - start + 1, start);
         if (rows.length === 0) return [];
@@ -193,10 +193,11 @@ export function createZsetsStorage(db, keys) {
       }
       const len = this.count(key);
       if (len === 0) return [];
-      let s = start < 0 ? Math.max(0, len + start) : start;
-      let e = stop < 0 ? Math.max(0, len + stop) : stop;
-      if (s > e) return [];
-      s = Math.min(s, len - 1);
+      // Redis: start clamps at 0, a negative stop may fall below 0 so the
+      // range collapses, and start >= len is empty.
+      const s = start < 0 ? Math.max(0, len + start) : start;
+      let e = stop < 0 ? len + stop : stop;
+      if (s > e || s >= len) return [];
       e = Math.min(e, len - 1);
       const limit = e - s + 1;
       const offset = s;
@@ -221,10 +222,9 @@ export function createZsetsStorage(db, keys) {
     rangeByRankReverse(key, start, stop, options = {}) {
       const len = this.count(key);
       if (len === 0) return [];
-      let s = start >= 0 ? start : Math.max(0, len + start);
-      let e = stop >= 0 ? stop : Math.max(0, len + stop);
-      if (s > e) return [];
-      s = Math.min(s, len - 1);
+      const s = start >= 0 ? start : Math.max(0, len + start);
+      let e = stop >= 0 ? stop : len + stop;
+      if (s > e || s >= len) return [];
       e = Math.min(e, len - 1);
       const limit = e - s + 1;
       const offset = s;
@@ -247,7 +247,8 @@ export function createZsetsStorage(db, keys) {
     rangeByScore(key, min, max, options = {}) {
       const limit = options.limit ?? -1;
       const offset = options.offset ?? 0;
-      const rows = rangeByScoreStmt.all(key, min, max, limit < 0 ? 1e9 : limit, offset);
+      if (offset < 0 || offset > Number.MAX_SAFE_INTEGER) return [];
+      const rows = rangeByScoreStmt.all(key, min, max, limit < 0 ? -1 : Math.min(limit, Number.MAX_SAFE_INTEGER), offset);
       if (!options.withScores) return rows.map((r) => r.member);
       const out = [];
       for (const r of rows) {
@@ -294,7 +295,8 @@ export function createZsetsStorage(db, keys) {
     rangeByScoreReverse(key, max, min, options = {}) {
       const limit = options.limit ?? -1;
       const offset = options.offset ?? 0;
-      const rows = rangeByScoreReverseStmt.all(key, max, min, limit < 0 ? 1e9 : limit, offset);
+      if (offset < 0 || offset > Number.MAX_SAFE_INTEGER) return [];
+      const rows = rangeByScoreReverseStmt.all(key, max, min, limit < 0 ? -1 : Math.min(limit, Number.MAX_SAFE_INTEGER), offset);
       if (!options.withScores) return rows.map((r) => r.member);
       const out = [];
       for (const r of rows) {
@@ -355,10 +357,9 @@ export function createZsetsStorage(db, keys) {
       return runInTransaction(db, () => {
         const len = this.count(key);
         if (len === 0) return 0;
-        let s = start >= 0 ? start : Math.max(0, len + start);
-        let e = stop >= 0 ? stop : Math.max(0, len + stop);
-        if (s > e) return 0;
-        s = Math.min(s, len - 1);
+        const s = start >= 0 ? start : Math.max(0, len + start);
+        let e = stop >= 0 ? stop : len + stop;
+        if (s > e || s >= len) return 0;
         e = Math.min(e, len - 1);
         const limit = e - s + 1;
         const offset = s;

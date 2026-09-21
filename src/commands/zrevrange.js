@@ -3,6 +3,8 @@
  * Same as ZRANGE but ordered from highest to lowest score (rank 0 = highest).
  */
 
+import { parseInteger } from '../util/integers.js';
+
 export function handleZrevrange(engine, args) {
   if (!args || args.length < 3) {
     return { error: 'ERR wrong number of arguments for \'ZREVRANGE\' command' };
@@ -13,11 +15,8 @@ export function handleZrevrange(engine, args) {
     if (a === 'WITHSCORES') withScores = true;
   }
   try {
-    const start = parseInt(String(args[1]), 10);
-    const stop = parseInt(String(args[2]), 10);
-    if (Number.isNaN(start) || Number.isNaN(stop)) {
-      return { error: 'ERR value is not an integer or out of range' };
-    }
+    const start = parseInteger(args[1]);
+    const stop = parseInteger(args[2]);
     const arr = engine.zrevrange(args[0], start, stop, { withScores });
     return arr;
   } catch (e) {

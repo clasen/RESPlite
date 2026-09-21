@@ -71,6 +71,39 @@ describe('Engine lists', () => {
     engine.set('lrem:str', 'value');
     assert.throws(() => engine.lrem('lrem:str', 1, 'x'), /WRONGTYPE/);
   });
+
+  it('LRANGE clamps bounds the way Redis does', () => {
+    engine.rpush('lrange-bounds', 'a', 'b', 'c');
+    const range = (start, stop) => engine.lrange('lrange-bounds', start, stop).map(String);
+    assert.deepEqual(range(0, -1), ['a', 'b', 'c']);
+    assert.deepEqual(range(0, 100), ['a', 'b', 'c']);
+    assert.deepEqual(range(1, -2), ['b']);
+    assert.deepEqual(range(-100, -100), []);
+    assert.deepEqual(range(0, -4), []);
+    assert.deepEqual(range(0, -13), []);
+    assert.deepEqual(range(3, 5), []);
+    assert.deepEqual(range(5, -1), []);
+  });
+
+  it('LTRIM clamps bounds the way Redis does', () => {
+    const build = (key) => engine.rpush(key, 'a', 'b', 'c');
+
+    build('ltrim-neg-stop');
+    engine.ltrim('ltrim-neg-stop', 0, -4);
+    assert.equal(engine.type('ltrim-neg-stop'), 'none');
+
+    build('ltrim-start-past-end');
+    engine.ltrim('ltrim-start-past-end', 3, 5);
+    assert.equal(engine.type('ltrim-start-past-end'), 'none');
+
+    build('ltrim-keep-all');
+    engine.ltrim('ltrim-keep-all', -100, 100);
+    assert.deepEqual(engine.lrange('ltrim-keep-all', 0, -1).map(String), ['a', 'b', 'c']);
+
+    build('ltrim-tail');
+    engine.ltrim('ltrim-tail', 1, -1);
+    assert.deepEqual(engine.lrange('ltrim-tail', 0, -1).map(String), ['b', 'c']);
+  });
 });
 
 describe('Engine list cache', () => {
@@ -120,6 +153,22 @@ describe('Engine list cache', () => {
     engine.lrange('list', 0, -1);
     const cached = ranges.map(([start, stop]) =>
       engine.lrange('list', start, stop).map((v) => v.toString())
+    );
+    assert.deepEqual(cached, uncached);
+    db.close();
+  });
+
+  it('keeps cached LRANGE stop clamping identical to SQLite reads', () => {
+    const { db, engine } = cachedEngine();
+    engine.rpush('list', 'a', 'b', 'c');
+    const ranges = [[-100, -3], [0, -4], [0, -13], [1, -2], [3, 5], [0, -1]];
+    const uncached = ranges.map(([start, stop]) =>
+      engine.lrange('list', start, stop).map(String)
+    );
+    assert.deepEqual(uncached, [['a'], [], [], ['b'], [], ['a', 'b', 'c']]);
+    engine.lrange('list', 0, -1);
+    const cached = ranges.map(([start, stop]) =>
+      engine.lrange('list', start, stop).map(String)
     );
     assert.deepEqual(cached, uncached);
     db.close();

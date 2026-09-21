@@ -138,10 +138,12 @@ export function createListsStorage(db, keys) {
       const len = length(meta);
       if (len === 0) return [];
 
-      // Redis: 0-based, negative from end. Clamp to [0, len-1]
-      let s = start < 0 ? Math.max(0, len + start) : Math.min(start, len - 1);
-      let e = stop < 0 ? Math.max(0, len + stop) : Math.min(stop, len - 1);
-      if (s > e) return [];
+      // Redis: 0-based, negative from end. Start clamps at 0, a negative stop
+      // may fall below 0 so the range collapses, and stop caps at len-1.
+      const s = start < 0 ? Math.max(0, len + start) : start;
+      let e = stop < 0 ? len + stop : stop;
+      if (s > e || s >= len) return [];
+      e = Math.min(e, len - 1);
 
       const seqStart = meta.headSeq + s;
       const seqStop = meta.headSeq + e;
@@ -311,14 +313,15 @@ export function createListsStorage(db, keys) {
         const len = length(meta);
         if (len === 0) return;
 
-        let s = start < 0 ? Math.max(0, len + start) : Math.min(start, len - 1);
-        let e = stop < 0 ? Math.max(0, len + stop) : Math.min(stop, len - 1);
-        if (s > e) {
+        const s = start < 0 ? Math.max(0, len + start) : start;
+        let e = stop < 0 ? len + stop : stop;
+        if (s > e || s >= len) {
           deleteAllItemsStmt.run(key);
           deleteMetaStmt.run(key);
           keys.delete(key);
           return;
         }
+        e = Math.min(e, len - 1);
 
         const newHead = meta.headSeq + s;
         const newTail = meta.headSeq + e;

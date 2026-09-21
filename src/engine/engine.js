@@ -14,6 +14,7 @@ import { createBlockingManager } from '../blocking/manager.js';
 import { runInTransaction } from '../storage/sqlite/tx.js';
 import { matchPattern } from '../util/patterns.js';
 import { expectString, expectHash, expectSet, expectList, expectZset, typeName } from './validate.js';
+import { parseInteger } from '../util/integers.js';
 import { asKey, asValue } from '../util/buffers.js';
 
 export function createEngine(opts = {}) {
@@ -187,9 +188,10 @@ export function createEngine(opts = {}) {
   function cachedListRange(values, start, stop) {
     const len = values.length;
     if (len === 0) return [];
-    const s = start < 0 ? Math.max(0, len + start) : Math.min(start, len - 1);
-    const e = stop < 0 ? Math.max(0, len + stop) : Math.min(stop, len - 1);
-    if (s > e) return [];
+    const s = start < 0 ? Math.max(0, len + start) : start;
+    let e = stop < 0 ? len + stop : stop;
+    if (s > e || s >= len) return [];
+    e = Math.min(e, len - 1);
     return values.slice(s, e + 1).map((value) => Buffer.from(value));
   }
 
@@ -245,9 +247,8 @@ export function createEngine(opts = {}) {
       e = stop;
     } else {
       s = start >= 0 ? start : Math.max(0, len + start);
-      e = stop >= 0 ? stop : Math.max(0, len + stop);
-      if (s > e) return [];
-      s = Math.min(s, len - 1);
+      e = stop >= 0 ? stop : len + stop;
+      if (s > e || s >= len) return [];
       e = Math.min(e, len - 1);
     }
     return formatCachedZset(ordered.slice(s, e + 1), withScores);
@@ -256,7 +257,8 @@ export function createEngine(opts = {}) {
   function cachedZsetScoreRange(entries, min, max, options = {}) {
     let ordered = Array.from(entries.values()).filter((entry) => entry[2] >= min && entry[2] <= max);
     if (options.reverse) ordered.reverse();
-    const offset = Math.max(0, options.offset ?? 0);
+    const offset = options.offset ?? 0;
+    if (offset < 0) return [];
     const limit = options.limit;
     if (limit != null && limit >= 0) ordered = ordered.slice(offset, offset + limit);
     else ordered = ordered.slice(offset);
@@ -880,9 +882,8 @@ export function createEngine(opts = {}) {
 
     lrange(key, start, stop) {
       const k = asKey(key);
-      const s = parseInt(String(start), 10);
-      const e = parseInt(String(stop), 10);
-      if (Number.isNaN(s) || Number.isNaN(e)) return [];
+      const s = parseInteger(start);
+      const e = parseInteger(stop);
       const cached = readCachedCollection(k, 'list');
       if (cached !== CACHE_MISS) return cached ? cachedListRange(cached, s, e) : [];
       const meta = getKeyMeta(k);
@@ -895,8 +896,7 @@ export function createEngine(opts = {}) {
 
     lindex(key, index) {
       const k = asKey(key);
-      const i = parseInt(String(index), 10);
-      if (Number.isNaN(i)) return null;
+      const i = parseInteger(index);
       const cached = readCachedCollection(k, 'list');
       if (cached !== CACHE_MISS) return cached ? cachedListIndex(cached, i) : null;
       const meta = getKeyMeta(k);
@@ -957,11 +957,10 @@ export function createEngine(opts = {}) {
 
     lset(key, index, value) {
       const k = asKey(key);
+      const i = parseInteger(index);
       const meta = getKeyMeta(key);
       if (!meta) throw new Error('ERR no such key');
       expectList(meta);
-      const i = parseInt(Buffer.isBuffer(index) ? index.toString() : String(index), 10);
-      if (Number.isNaN(i)) throw new Error('ERR index out of range');
       const val = Buffer.isBuffer(value) ? value : asValue(value);
       lists.lset(k, i, val);
       invalidateCachedKey(k);
@@ -969,12 +968,11 @@ export function createEngine(opts = {}) {
 
     ltrim(key, start, stop) {
       const k = asKey(key);
+      const s = parseInteger(start);
+      const e = parseInteger(stop);
       const meta = getKeyMeta(key);
       if (!meta) return;
       expectList(meta);
-      const s = parseInt(Buffer.isBuffer(start) ? start.toString() : String(start), 10);
-      const e = parseInt(Buffer.isBuffer(stop) ? stop.toString() : String(stop), 10);
-      if (Number.isNaN(s) || Number.isNaN(e)) return;
       lists.ltrim(k, s, e);
       invalidateCachedKey(k);
     },

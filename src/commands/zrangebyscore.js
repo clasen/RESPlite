@@ -2,31 +2,30 @@
  * ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]
  */
 
+import { parseInteger } from '../util/integers.js';
 import { parseScoreBound } from './score-bounds.js';
 
 export function handleZrangebyscore(engine, args) {
   if (!args || args.length < 3) {
     return { error: 'ERR wrong number of arguments for \'ZRANGEBYSCORE\' command' };
   }
-  let withScores = false;
-  let limitOffset = null;
-  let limitCount = null;
-  const raw = args.slice(3);
-  for (let i = 0; i < raw.length; i++) {
-    const a = (Buffer.isBuffer(raw[i]) ? raw[i].toString('utf8') : String(raw[i])).toUpperCase();
-    if (a === 'WITHSCORES') {
-      withScores = true;
-    } else if (a === 'LIMIT' && i + 2 < raw.length) {
-      const off = parseInt(String(raw[i + 1]), 10);
-      const cnt = parseInt(String(raw[i + 2]), 10);
-      if (!Number.isNaN(off) && !Number.isNaN(cnt)) {
-        limitOffset = off;
-        limitCount = cnt;
-      }
-      i += 2;
-    }
-  }
   try {
+    let withScores = false;
+    let limitOffset = null;
+    let limitCount = null;
+    const raw = args.slice(3);
+    for (let i = 0; i < raw.length; i++) {
+      const option = String(raw[i]).toUpperCase();
+      if (option === 'WITHSCORES') {
+        withScores = true;
+      } else if (option === 'LIMIT' && i + 2 < raw.length) {
+        limitOffset = parseInteger(raw[i + 1]);
+        limitCount = parseInteger(raw[i + 2]);
+        i += 2;
+      } else {
+        return { error: 'ERR syntax error' };
+      }
+    }
     const min = parseScoreBound(args[1]);
     const max = parseScoreBound(args[2]);
     if (min == null || max == null) {

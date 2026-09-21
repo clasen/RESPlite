@@ -63,7 +63,7 @@ describe('Engine sorted-set cache', () => {
   it('keeps cached rank and score ranges identical to SQLite reads', () => {
     const { db, engine } = cachedEngine();
     seed(engine);
-    const rankRanges = [[0, 0], [0, 20], [-2, -1], [100, -1], [-100, -100], [2, 0]];
+    const rankRanges = [[0, 0], [0, 20], [-2, -1], [100, -1], [-100, -100], [2, 0], [0, -4], [0, -5], [-100, -1], [4, 5]];
     const readAll = () => ({
       asc: rankRanges.map(([start, stop]) => engine.zrange('zset', start, stop, { withScores: true }).map(String)),
       desc: rankRanges.map(([start, stop]) => engine.zrevrange('zset', start, stop, { withScores: true }).map(String)),
@@ -71,8 +71,25 @@ describe('Engine sorted-set cache', () => {
       reverseScore: engine.zrevrangebyscore('zset', 3, 2, { withScores: true, offset: 1, limit: 2 }).map(String),
     });
     const uncached = readAll();
+    assert.deepEqual(
+      rankRanges.map(([start, stop]) => engine.zrange('zset', start, stop).map(String)),
+      [['a'], ['a', 'b', 'c', 'd'], ['c', 'd'], [], [], [], ['a'], [], ['a', 'b', 'c', 'd'], []]
+    );
     engine.zrange('zset', 0, -1);
     assert.deepEqual(readAll(), uncached);
+    db.close();
+  });
+
+  it('returns no members for a negative score-range offset, cached and uncached', () => {
+    const { db, engine } = cachedEngine();
+    seed(engine);
+    const query = () => [
+      engine.zrangebyscore('zset', 1, 3, { offset: -1, limit: 10 }).map(String),
+      engine.zrevrangebyscore('zset', 3, 1, { offset: -2 }).map(String),
+    ];
+    assert.deepEqual(query(), [[], []]);
+    engine.zrange('zset', 0, -1);
+    assert.deepEqual(query(), [[], []]);
     db.close();
   });
 
