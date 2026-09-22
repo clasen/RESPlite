@@ -17,6 +17,7 @@ Supported:
 - `GET`
 - `SET`
 - `SETEX`
+- `SETNX`
 - `MGET`
 - `MSET`
 - `MSETNX`
@@ -232,19 +233,16 @@ This keeps the logical keyspace clean and avoids stale empty types.
 
 ---
 
-## 9. SET Command v1 Scope
+## 9. SET Command Scope
 
-Supported forms in v1:
+Supported form:
 
-- `SET key value`
-- `SET key value EX seconds`
-- `SET key value PX milliseconds`
+- `SET key value [NX | XX] [GET] [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | KEEPTTL]`
 
-Not supported in v1:
+Options may appear in any order and are case-insensitive. `NX` and `XX` exclude each other, at most one expiry form may be given, and repeating the same option keeps and validates only the last value. Invalid syntax produces a Redis-style syntax error. Expire amounts must be positive signed 64-bit integers; conversion to milliseconds and addition of the current time must also fit in a signed 64-bit integer. These checks happen before conditional writes and leave existing values unchanged on failure. SQLite stores the exact integer expiration, including beyond JavaScript's safe integer range. The low-level engine returns a `bigint` for TTL results outside that range; RESP2 replies remain integers. Lua receives numeric replies with its usual floating-point precision.
 
-- `NX`
-- `XX`
-- `GET`
-- `KEEPTTL`
+`SET` acquires a SQLite write lock before reading the key, testing `NX`/`XX`, retrieving `GET`, and writing the replacement. It uses one time snapshot for the command and updates the local cache after transaction success. Independent processes must disable the hot cache when sharing a database; this command-level guarantee does not provide cross-process cache invalidation or make all other commands safe for shared writers.
 
-Invalid syntax should produce a Redis-style syntax error.
+`COMMAND INFO` includes Redis 7 metadata for `SET`, `SETNX`, `SETEX`, `MSET` and `MSETNX`, preserves nil entries for unknown or hidden commands, and lists visible commands when no names are supplied. Metadata for other commands remains partial.
+
+A skipped write (`NX` on an existing key, `XX` on a missing key) replies nil and leaves the value and its expiration untouched. `GET` replies with the previous value, or nil when the key is absent, and fails with `WRONGTYPE` when the key holds another type even if the write is skipped. Unconditional string writes (`SET`, `SETEX`, `MSET`) replace a key of any type, as Redis does, deleting the previous value's rows; reads and numeric mutations keep reporting `WRONGTYPE` on a mismatched key. `KEEPTTL` preserves the existing expiration, including when the replaced key held another type; every other successful form clears it. `SETNX key value` remains available as the legacy equivalent of `SET key value NX`.

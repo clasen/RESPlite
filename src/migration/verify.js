@@ -56,7 +56,9 @@ function getKeyFromDestination(storages, keyBuf) {
 
   const now = Date.now();
   const expiresAt = meta.expiresAt;
-  const ttl = expiresAt != null && expiresAt > now ? Math.floor((expiresAt - now) / 1000) : -1;
+  const ttl = expiresAt != null && expiresAt > now
+    ? (typeof expiresAt === 'bigint' ? Number((expiresAt - BigInt(now)) / 1000n) : Math.floor((expiresAt - now) / 1000))
+    : -1;
 
   return { type, value, ttl };
 }

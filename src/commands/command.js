@@ -1,11 +1,11 @@
 /**
  * COMMAND - introspection: list commands, count, or info for specific commands.
- * Reply format compatible with Redis COMMAND (array of [name, arity, flags, firstKey, lastKey, step, acl_categories]).
+ * Redis-style command docs; string writes include Redis 7 tips, key specs and subcommands.
  */
 
 /** @type {Set<string>} Commands that modify data (write). */
 const WRITE_COMMANDS = new Set([
-  'SET', 'SETEX', 'MSET', 'MSETNX', 'DEL', 'UNLINK', 'FLUSHDB', 'FLUSHALL', 'EXPIRE', 'PEXPIRE', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
+  'SET', 'SETEX', 'SETNX', 'MSET', 'MSETNX', 'DEL', 'UNLINK', 'FLUSHDB', 'FLUSHALL', 'EXPIRE', 'PEXPIRE', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
   'HSET', 'HSETNX', 'HMSET', 'HDEL', 'HINCRBY', 'HINCRBYFLOAT',
   'HEXPIRE', 'HPEXPIRE', 'HEXPIREAT', 'HPEXPIREAT', 'HPERSIST',
   'SADD', 'SREM', 'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LREM', 'LMPOP', 'ZADD', 'ZREM', 'ZMPOP',
@@ -44,6 +44,14 @@ const HASH_ARITIES = new Map([
   ['HPERSIST', -5],
 ]);
 
+const STRING_WRITES = new Map([
+  ['SET', { arity: -3, access: ['RW', 'access', 'update', 'variable_flags'] }],
+  ['SETNX', { arity: 3, access: ['OW', 'insert'], fast: true }],
+  ['SETEX', { arity: 4, access: ['OW', 'update'] }],
+  ['MSET', { arity: -3, access: ['OW', 'update'], multiple: true }],
+  ['MSETNX', { arity: -3, access: ['OW', 'insert'], multiple: true }],
+]);
+
 /**
  * Build Redis-style command doc: [name, arity, flags, firstKey, lastKey, step, acl_categories].
  * @param {string} name - Command name (lowercase for reply).
@@ -51,6 +59,22 @@ const HASH_ARITIES = new Map([
  */
 function docFor(name, canonicalName = name) {
   const lower = name.toLowerCase();
+  const stringWrite = STRING_WRITES.get(canonicalName);
+  if (stringWrite) {
+    const { arity, access, fast, multiple } = stringWrite;
+    const lastKey = multiple ? -1 : 1;
+    const step = multiple ? 2 : 1;
+    const keySpec = [
+      ...(canonicalName === 'SET' ? ['notes', 'RW and ACCESS due to the optional `GET` argument'] : []),
+      'flags', access.map((simple) => ({ simple })),
+      'begin_search', ['type', 'index', 'spec', ['index', 1]],
+      'find_keys', ['type', 'range', 'spec', ['lastkey', multiple ? -1 : 0, 'keystep', step, 'limit', 0]],
+    ];
+    return [lower, arity, ['write', 'denyoom', ...(fast ? ['fast'] : [])].map((simple) => ({ simple })), 1, lastKey, step,
+      ['@write', '@string', fast ? '@fast' : '@slow'].map((simple) => ({ simple })),
+      canonicalName === 'MSET' ? ['request_policy:multi_shard', 'response_policy:all_succeeded'] : [],
+      [keySpec], []];
+  }
   if (canonicalName === 'EVAL' || canonicalName === 'EVALSHA') {
     return [lower, -3, ['noscript', 'movablekeys'], 0, 0, 0, ['@scripting', '@slow']];
   }
@@ -102,8 +126,6 @@ function docFor(name, canonicalName = name) {
     step = 1;
   } else if (HASH_ARITIES.has(canonicalName)) {
     arity = HASH_ARITIES.get(canonicalName);
-  } else if (canonicalName === 'SETEX') {
-    arity = 4;
   }
   return [lower, arity, flags, firstKey, lastKey, step, []];
 }
@@ -128,9 +150,10 @@ export function handleCommand(engine, args, context) {
     return allNames.length;
   }
   if (sub === 'INFO') {
-    const names = (args.slice(1) || []).map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)).toUpperCase());
+    const names = args.length === 1 ? allNames
+      : args.slice(1).map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)).toUpperCase());
     const set = new Set(allNames);
-    const reply = names.map((n) => set.has(n) ? docFor(n, resolveCanonical(n)) : null).filter((x) => x != null);
+    const reply = names.map((n) => set.has(n) ? docFor(n, resolveCanonical(n)) : null);
     return reply;
   }
 

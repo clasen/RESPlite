@@ -48,6 +48,29 @@ for (const [name, createScripting] of [
       assert.equal(await client.evalSha(loaded, { arguments: ['loaded'] }), 'loaded');
     });
 
+    it('passes full-width expiration replies into Lua as numbers', async (t) => {
+      const { client } = await fixture(t);
+      await client.sendCommand(['SET', 'wide-ttl', 'value', 'PXAT', '9223372036854775807']);
+      assert.equal(await client.eval("return redis.call('PTTL', KEYS[1]) > 9e18 and 1 or 0", { keys: ['wide-ttl'] }), 1);
+    });
+
+    it('runs SET with NX, XX and GET from scripts', async (t) => {
+      const { client } = await fixture(t);
+      const source = [
+        "local created = redis.call('SET', KEYS[1], ARGV[1], 'NX')",
+        "local blocked = redis.call('SET', KEYS[1], ARGV[2], 'NX')",
+        "local previous = redis.call('SET', KEYS[1], ARGV[2], 'XX', 'GET')",
+        "local missing = redis.call('SET', KEYS[2], ARGV[1], 'XX', 'GET')",
+        'return { created.ok, blocked == false, previous, missing == false }',
+      ].join('\n');
+
+      assert.deepEqual(
+        await client.eval(source, { keys: ['script:setopt', 'script:setopt:missing'], arguments: ['first', 'second'] }),
+        ['OK', 1, 'first', 1]
+      );
+      assert.equal(await client.get('script:setopt'), 'second');
+    });
+
     it('supports username assignment, ensure, rename and exhaustion', async (t) => {
       const { client } = await fixture(t);
       const assign = (hid, mode, ...candidates) => client.eval(USERNAME_SCRIPT, {

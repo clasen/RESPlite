@@ -82,11 +82,36 @@ describe('COMMAND integration', () => {
     assert.ok(flags.get('hpttl').includes('readonly'));
   });
 
-  it('COMMAND INFO unknown returns empty array', async () => {
-    const reply = await sendCommand(port, argv('COMMAND', 'INFO', 'NOSUCHCOMMAND'));
+  it('COMMAND INFO preserves positions of unknown commands', async () => {
+    const reply = await sendCommand(port, argv('COMMAND', 'INFO', 'NOSUCHCOMMAND', 'SET', 'NOSUCHCOMMAND'));
     const v = tryParseValue(reply, 0).value;
     assert.ok(Array.isArray(v));
-    assert.strictEqual(v.length, 0);
+    assert.strictEqual(v.length, 3);
+    assert.equal(v[0], null);
+    assert.equal(v[1][0].toString(), 'set');
+    assert.equal(v[2], null);
+  });
+
+  it('COMMAND INFO without names returns the same docs as COMMAND', async () => {
+    assert.deepEqual(await sendCommand(port, argv('COMMAND', 'INFO')), await sendCommand(port, argv('COMMAND')));
+  });
+
+  it('COMMAND INFO reports SETNX arity and write flag', async () => {
+    const reply = await sendCommand(port, argv('COMMAND', 'INFO', 'SETNX', 'SETEX', 'STRLEN'));
+    const docs = tryParseValue(reply, 0).value;
+    assert.deepEqual(docs.map((doc) => doc[1]), [3, 4, 2]);
+    assert.deepEqual(docs[0].slice(3, 6), [1, 1, 1]);
+    const flags = new Map(docs.map((doc) => [doc[0].toString('utf8'), doc[2].map((flag) => flag.toString('utf8'))]));
+    assert.ok(flags.get('setnx').includes('write'));
+    assert.ok(flags.get('strlen').includes('readonly'));
+  });
+
+  it('COMMAND INFO reports the SET option arity', async () => {
+    const reply = await sendCommand(port, argv('COMMAND', 'INFO', 'SET'));
+    const [doc] = tryParseValue(reply, 0).value;
+    assert.equal(doc[1], -3);
+    assert.deepEqual(doc.slice(3, 6), [1, 1, 1]);
+    assert.ok(doc[2].map((flag) => flag.toString('utf8')).includes('write'));
   });
 
   it('COMMAND unknown subcommand returns error', async () => {

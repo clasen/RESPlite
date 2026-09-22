@@ -8,17 +8,17 @@ import { TYPES, CRLF, NULL_BULK } from './types.js';
 /**
  * Encode a value to RESP2 format.
  * - null -> null bulk string ($-1\r\n)
- * - number -> integer (:\r\n)
+ * - number/BigInt -> integer (:\r\n)
  * - string/Buffer -> bulk string
  * - array -> array
- * @param {string|Buffer|number|null|Array} value
+ * @param {string|Buffer|number|bigint|null|Array} value
  * @returns {Buffer}
  */
 export function encode(value) {
   if (value === null || value === NULL_BULK) {
     return Buffer.from('$-1\r\n', 'ascii');
   }
-  if (typeof value === 'number') {
+  if (typeof value === 'number' || typeof value === 'bigint') {
     return Buffer.from(':' + String(value) + CRLF, 'ascii');
   }
   if (typeof value === 'string' || Buffer.isBuffer(value)) {

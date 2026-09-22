@@ -34,7 +34,7 @@ export function cleanError(message) {
 export function createReplyCodec(lua, { pushBytes, readBytes, timedOut, timeoutError, integerIndex = BigInt, fieldName = (name) => name }) {
   function pushReply(L, value) {
     if (value === null) lua.lua_pushboolean(L, 0);
-    else if (typeof value === 'number') lua.lua_pushnumber(L, value);
+    else if (typeof value === 'number' || typeof value === 'bigint') lua.lua_pushnumber(L, Number(value));
     else if (Buffer.isBuffer(value) || typeof value === 'string') pushBytes(L, value);
     else if (Array.isArray(value)) {
       lua.lua_createtable(L, value.length, 0);

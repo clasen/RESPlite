@@ -18,13 +18,19 @@ export function createStringsStorage(db, keys) {
   function _setOne(key, value, options) {
     const now = options.updatedAt ?? Date.now();
     const expiresAt = options.expiresAt ?? null;
-    const meta = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
+    let meta = Object.prototype.hasOwnProperty.call(options, 'existingMeta')
       ? options.existingMeta
       : keys.get(key);
-    if (meta) {
-      if (meta.type !== KEY_TYPES.STRING) {
+    if (meta && meta.type !== KEY_TYPES.STRING) {
+      if (!options.replaceForeignType) {
         throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value');
       }
+      // Redis replaces a key of any type on an unconditional string write; deleting the
+      // keyspace row cascades to the rows of the previous type.
+      keys.delete(key);
+      meta = null;
+    }
+    if (meta) {
       keys.set(key, KEY_TYPES.STRING, { expiresAt, updatedAt: now, existingMeta: meta });
       updateStmt.run(value, key);
     } else {

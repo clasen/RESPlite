@@ -9,6 +9,7 @@ import * as quit from './quit.js';
 import * as get from './get.js';
 import * as set from './set.js';
 import * as setex from './setex.js';
+import * as setnx from './setnx.js';
 import * as strlen from './strlen.js';
 import * as del from './del.js';
 import * as unlink from './unlink.js';
@@ -128,6 +129,7 @@ const HANDLERS = new Map([
   ['GET', (e, a) => get.handleGet(e, a)],
   ['SET', (e, a) => set.handleSet(e, a)],
   ['SETEX', (e, a) => setex.handleSetex(e, a)],
+  ['SETNX', (e, a) => setnx.handleSetnx(e, a)],
   ['STRLEN', (e, a) => strlen.handleStrlen(e, a)],
   ['DEL', (e, a) => del.handleDel(e, a)],
   ['UNLINK', (e, a) => unlink.handleUnlink(e, a)],
@@ -398,7 +400,8 @@ export function dispatch(engine, argv, context) {
     return { result };
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
-    const errorMsg = msg.startsWith('ERR ') ? msg : 'ERR ' + msg;
+    // Redis sends the error code as the first token; only prefix messages without one.
+    const errorMsg = msg.startsWith('ERR ') || msg.startsWith('WRONGTYPE ') ? msg : 'ERR ' + msg;
     context?.onCommandError?.({
       command: cmd,
       error: errorMsg,

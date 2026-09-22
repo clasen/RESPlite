@@ -14,7 +14,7 @@ import { createBlockingManager } from '../blocking/manager.js';
 import { runInTransaction } from '../storage/sqlite/tx.js';
 import { matchPattern } from '../util/patterns.js';
 import { expectString, expectHash, expectSet, expectList, expectZset, typeName } from './validate.js';
-import { parseInteger } from '../util/integers.js';
+import { parseInteger, parseInteger64, numberIfSafe } from '../util/integers.js';
 import { asKey, asValue } from '../util/buffers.js';
 
 export function createEngine(opts = {}) {
@@ -296,10 +296,10 @@ export function createEngine(opts = {}) {
     return next;
   }
 
-  function getKeyMeta(key) {
+  function getKeyMeta(key, now = clock()) {
     const k = Buffer.isBuffer(key) ? key : asKey(key);
     const meta = keys.get(k);
-    if (meta && meta.expiresAt != null && meta.expiresAt <= clock()) {
+    if (meta && meta.expiresAt != null && meta.expiresAt <= now) {
       keys.delete(k);
       invalidateCachedKey(k);
       return null;
@@ -334,13 +334,41 @@ export function createEngine(opts = {}) {
 
     set(key, value, options = {}) {
       const k = asKey(key);
-      const existingMeta = getKeyMeta(k); // lazy-expire if needed
       const v = asValue(value);
-      let expiresAt = options.expiresAt ?? null;
-      if (options.ex != null) expiresAt = clock() + options.ex * 1000;
-      if (options.px != null) expiresAt = clock() + options.px;
-      strings.set(k, v, { expiresAt, existingMeta });
-      cacheString(k, v, { version: versionAfterWrite(existingMeta), expiresAt });
+      let writtenMeta;
+      // Acquire the write lock before reading the condition, including across connections.
+      const result = db.transaction(() => {
+        const now = clock();
+        let expiresAt = options.expiresAt ?? null;
+        for (const option of ['ex', 'px', 'exat', 'pxat']) {
+          if (options[option] == null) continue;
+          const amount = parseInteger64(options[option]);
+          let expiration = amount * (option === 'ex' || option === 'exat' ? 1000n : 1n);
+          if (option === 'ex' || option === 'px') expiration += BigInt(now);
+          if (amount <= 0n || expiration > 9223372036854775807n) {
+            throw new Error("ERR invalid expire time in 'set' command");
+          }
+          expiresAt = numberIfSafe(expiration);
+        }
+        const existingMeta = getKeyMeta(k, now);
+        const wantsPrevious = options.get === true;
+        if (wantsPrevious && existingMeta) expectString(existingMeta);
+        // Read the same database snapshot as the condition, not a process-local cache.
+        const previous = wantsPrevious && existingMeta ? strings.get(k) : null;
+        if ((options.nx === true && existingMeta != null)
+          || (options.xx === true && existingMeta == null)) return { written: false, previous };
+        if (options.keepttl === true) expiresAt = existingMeta ? existingMeta.expiresAt : null;
+        strings.set(k, v, { expiresAt, existingMeta, replaceForeignType: true });
+        writtenMeta = keys.get(k);
+        return { written: true, previous };
+      }).immediate();
+      if (result.written) cacheString(k, v, writtenMeta);
+      return result;
+    },
+
+    setnx(key, value) {
+      const { written } = engine.set(key, value, { nx: true });
+      return written ? 1 : 0;
     },
 
     mset(pairs) {
@@ -355,7 +383,7 @@ export function createEngine(opts = {}) {
           entriesByKey.set(mapKey, {
             key: k,
             value: asValue(pairs[i + 1]),
-            options: { existingMeta: getKeyMeta(k) },
+            options: { existingMeta: getKeyMeta(k), replaceForeignType: true },
           });
         }
       }
@@ -456,18 +484,18 @@ export function createEngine(opts = {}) {
       const meta = getKeyMeta(key);
       if (!meta) return -2;
       if (meta.expiresAt == null) return -1;
-      const ms = meta.expiresAt - clock();
+      const ms = typeof meta.expiresAt === 'bigint' ? meta.expiresAt - BigInt(clock()) : meta.expiresAt - clock();
       if (ms <= 0) return -2;
-      return Math.floor(ms / 1000);
+      return typeof ms === 'bigint' ? numberIfSafe(ms / 1000n) : Math.floor(ms / 1000);
     },
 
     pttl(key) {
       const meta = getKeyMeta(key);
       if (!meta) return -2;
       if (meta.expiresAt == null) return -1;
-      const ms = meta.expiresAt - clock();
+      const ms = typeof meta.expiresAt === 'bigint' ? meta.expiresAt - BigInt(clock()) : meta.expiresAt - clock();
       if (ms <= 0) return -2;
-      return ms;
+      return numberIfSafe(ms);
     },
 
     persist(key) {

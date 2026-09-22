@@ -69,7 +69,7 @@ describe('command hardening policy', () => {
 
     const infoReply = parseResp(await sendCommand(port, argv('COMMAND', 'INFO', 'RMDEL')));
     assert.ok(Array.isArray(infoReply));
-    assert.equal(infoReply.length, 0);
+    assert.deepEqual(infoReply, [null]);
   });
 
   it('renamed write command executes through alias and blocks original', async () => {

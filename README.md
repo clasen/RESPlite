@@ -94,6 +94,8 @@ const srv = await createRESPlite({
 
 The hot string and small-collection cache is enabled by default with the limits shown above. SQLite remains the source of truth. Complete hashes, sets, lists, and sorted sets above their per-type limits are not cached; hashes with field TTLs are also excluded. Pass `cache: false` to disable it, or provide only the limits you want to override.
 
+Use one RESPlite server per database in production. Independent processes do not invalidate each other's hot caches. Disable caching if another process accesses the same database; this alone does not guarantee cross-process atomicity for every command.
+
 Available hooks:
 
 - `onUnknownCommand`: client sent an unsupported command, such as `XADD` or `EVAL` on an instance without scripting. Payload includes `argv` (full command line as strings, e.g. `['CLIENT','LIST']`) so you can log exactly what was sent.
@@ -433,6 +435,10 @@ The group coordinates lifecycle only. Its instances do not share data, cache, or
 await client.set('session:abc', JSON.stringify({ user: 'alice' }));
 await client.expire('session:abc', 3600);      // expire in 1 hour
 console.log(await client.ttl('session:abc'));  // → 3600 (approx)
+
+// Set only when absent, with a TTL (locks and singletons)
+console.log(await client.set('lock:report', 'worker-1', { NX: true, EX: 30 }));  // → "OK", or null when taken
+console.log(await client.set('lock:report', 'worker-2', { XX: true, GET: true })); // → "worker-1"
 
 // Atomic counters
 await client.set('visits', '0');
@@ -853,7 +859,7 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 | Category | Commands |
 |---|---|
 | **Connection** | PING, ECHO, QUIT |
-| **Strings** | GET, SET, MGET, MSET, MSETNX, DEL, UNLINK, EXISTS, INCR, DECR, INCRBY, DECRBY, STRLEN |
+| **Strings** | GET, SET, SETNX, MGET, MSET, MSETNX, DEL, UNLINK, EXISTS, INCR, DECR, INCRBY, DECRBY, STRLEN |
 | **TTL** | EXPIRE, PEXPIRE, TTL, PTTL, PERSIST |
 | **Hashes** | HSET, HSETNX, HMSET, HGET, HMGET, HGETALL, HKEYS, HVALS, HDEL, HEXISTS, HLEN, HSTRLEN, HINCRBY, HINCRBYFLOAT, HSCAN, HRANDFIELD, HEXPIRE, HPEXPIRE, HEXPIREAT, HPEXPIREAT, HTTL, HPTTL, HEXPIRETIME, HPEXPIRETIME, HPERSIST |
 | **Sets** | SADD, SREM, SMEMBERS, SISMEMBER, SMISMEMBER, SCARD, SPOP, SRANDMEMBER |
@@ -867,6 +873,8 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 RESPlite has one logical database, so `FLUSHDB` and `FLUSHALL` have the same effect. Both accept `SYNC` and `ASYNC` for client compatibility, but SQLite completes either form synchronously. A flush removes the keyspace and all `FT.*` indices, documents, and suggestions; internal migration bookkeeping is preserved.
 
 `HMSET` is retained as a legacy compatibility alias and returns `OK`; new applications should use multi-field `HSET`. Hash field expiration follows Redis 7.4 semantics: `HSET` clears the affected field TTL, while `HINCRBY` and `HINCRBYFLOAT` preserve it.
+
+`SET` follows the Redis 7 option set: `[NX | XX] [GET] [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | KEEPTTL]`, in any order and case-insensitive. A skipped write replies nil, `GET` replies with the previous value, and `KEEPTTL` preserves the existing expiration while every other form clears it. `SETNX` is retained as the legacy alias of `SET key value NX`. Like Redis, `SET`, `SETEX` and `MSET` replace a key of any type, while reads and numeric mutations (`GET`, `INCR`, `HGET`, ...) still report `WRONGTYPE` on a mismatched key.
 
 ### Not supported (v1)
 

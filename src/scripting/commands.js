@@ -1,7 +1,7 @@
 export const SCRIPTING_COMMANDS = new Set(['EVAL', 'EVALSHA', 'SCRIPT']);
 
 export const SCRIPTABLE_COMMANDS = new Set([
-  'PING', 'ECHO', 'GET', 'SET', 'SETEX', 'STRLEN', 'MGET', 'MSET', 'MSETNX',
+  'PING', 'ECHO', 'GET', 'SET', 'SETEX', 'SETNX', 'STRLEN', 'MGET', 'MSET', 'MSETNX',
   'DEL', 'UNLINK', 'EXISTS', 'TYPE', 'OBJECT', 'DBSIZE', 'SCAN', 'KEYS', 'RENAME',
   'EXPIRE', 'PEXPIRE', 'TTL', 'PTTL', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
   'HSET', 'HSETNX', 'HMSET', 'HGET', 'HMGET', 'HGETALL', 'HKEYS', 'HVALS', 'HDEL',

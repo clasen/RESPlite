@@ -70,6 +70,30 @@ describe('redis client compatibility', () => {
     assert.equal(n, 3);
   });
 
+  it('supports SETNX through the redis client API', async () => {
+    assert.equal(await client.setNX('contract:setnx', 'first'), true);
+    assert.equal(await client.setNX('contract:setnx', 'second'), false);
+    assert.equal(await client.get('contract:setnx'), 'first');
+  });
+
+  it('supports SET options through the redis client API', async () => {
+    assert.equal(await client.set('contract:setopt', 'first', { NX: true, EX: 100 }), 'OK');
+    assert.equal(await client.set('contract:setopt', 'second', { NX: true }), null);
+    assert.equal(await client.get('contract:setopt'), 'first');
+    assert.ok(await client.ttl('contract:setopt') > 90);
+
+    assert.equal(await client.set('contract:setopt', 'third', { XX: true, GET: true }), 'first');
+    assert.equal(await client.get('contract:setopt'), 'third');
+    assert.equal(await client.ttl('contract:setopt'), -1);
+
+    assert.equal(await client.set('contract:setopt', 'fourth', { EX: 100 }), 'OK');
+    assert.equal(await client.set('contract:setopt', 'fifth', { KEEPTTL: true }), 'OK');
+    assert.ok(await client.ttl('contract:setopt') > 90);
+
+    assert.equal(await client.set('contract:setopt:missing', 'value', { XX: true }), null);
+    assert.equal(await client.exists('contract:setopt:missing'), 0);
+  });
+
   it('HLEN on non-existent key returns 0', async () => {
     const n = await client.hLen('hlen:c:missing');
     assert.equal(n, 0);

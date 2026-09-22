@@ -9,7 +9,7 @@ import { KEY_TYPES } from './schema.js';
  */
 export function createKeysStorage(db) {
   const getByKey = db.prepare(
-    'SELECT key, type, expires_at AS expiresAt, set_count AS setCount, hash_count AS hashCount, zset_count AS zsetCount, version, updated_at AS updatedAt FROM redis_keys WHERE key = ?'
+    'SELECT key, type, CASE WHEN expires_at > 9007199254740991 THEN CAST(expires_at AS TEXT) ELSE expires_at END AS expiresAt, set_count AS setCount, hash_count AS hashCount, zset_count AS zsetCount, version, updated_at AS updatedAt FROM redis_keys WHERE key = ?'
   );
   const insert = db.prepare(
     `INSERT INTO redis_keys (key, type, expires_at, set_count, hash_count, zset_count, version, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
@@ -65,6 +65,7 @@ export function createKeysStorage(db) {
 
     get(key) {
       const row = getByKey.get(key);
+      if (row && typeof row.expiresAt === 'string') row.expiresAt = BigInt(row.expiresAt);
       return row ? { ...row, key: row.key } : null;
     },
 
