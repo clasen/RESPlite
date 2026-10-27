@@ -1,12 +1,13 @@
 import { performance } from 'node:perf_hooks';
 import { INSTRUCTION_CHECK_INTERVAL } from './config.js';
 import { LUA, BOOTSTRAP, cleanError, createReplyCodec } from './lua-common.js';
+import { createJsonCodec } from './lua-json.js';
 
 const bootstrapBytecode = new WeakMap();
 
 /** Synchronous runner for trusted scripts. Memory is managed by the JavaScript GC. */
 export function runFengari(fengari, source, keys, args, config, call, compileOnly = false, onCompiled = () => {}) {
-  const { lua, lauxlib, lualib, to_luastring: bytes } = fengari;
+  const { lua, lauxlib, lualib, luaconf, to_luastring: bytes } = fengari;
   const deadline = performance.now() + config.timeoutMs;
   const timedOut = () => performance.now() >= deadline;
   const timeoutError = () => new Error('ERR script execution timed out');
@@ -20,6 +21,9 @@ export function runFengari(fengari, source, keys, args, config, call, compileOnl
   const readBytes = (L, index) => Buffer.from(lua.lua_tolstring(L, index));
   const { pushReply, readReply } = createReplyCodec(lua, {
     pushBytes, readBytes, timedOut, timeoutError, integerIndex: Number, fieldName: bytes,
+  });
+  const json = createJsonCodec(lua, {
+    pushBytes, readBytes, timedOut, timeoutError, toInteger: Number, maxInteger: luaconf.LUA_MAXINTEGER, fieldName: bytes,
   });
 
   function assertOk(L, status) {
@@ -69,6 +73,8 @@ export function runFengari(fengari, source, keys, args, config, call, compileOnl
     });
     lua.lua_setfield(state, -2, bytes('call'));
     lua.lua_setglobal(state, bytes('redis'));
+    json.pushLibrary(state, (L, fn) => lua.lua_pushcfunction(L, fn));
+    lua.lua_setglobal(state, bytes('cjson'));
     const cached = bootstrapBytecode.get(fengari);
     if (cached) load(state, cached, '@resplite', 'b');
     else {

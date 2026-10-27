@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { INSTRUCTION_CHECK_INTERVAL } from './config.js';
 import { LUA, BOOTSTRAP, cleanError, createReplyCodec } from './lua-common.js';
+import { createJsonCodec } from './lua-json.js';
 
 const bootstrapBytecode = new WeakMap();
 
@@ -53,6 +54,7 @@ export function runLua(lua, source, keys, args, config, call, compileOnly = fals
   }
 
   const { pushReply, readReply } = createReplyCodec(lua, { pushBytes, readBytes, timedOut, timeoutError });
+  const json = createJsonCodec(lua, { pushBytes, readBytes, timedOut, timeoutError });
 
   function assertOk(L, status) {
     if (status === LUA.OK) return;
@@ -117,6 +119,12 @@ export function runLua(lua, source, keys, args, config, call, compileOnly = fals
       lua.lua_pushcclosure(L, bridge, 0);
       lua.lua_setfield(L, -2, 'call');
       lua.lua_setglobal(L, 'redis');
+      json.pushLibrary(L, (state, fn) => {
+        const pointer = wasm.addFunction(fn, 'ii');
+        pointers.push(pointer);
+        lua.lua_pushcclosure(state, pointer, 0);
+      });
+      lua.lua_setglobal(L, 'cjson');
       return 0;
     }, 'ii');
     pointers.push(setup);

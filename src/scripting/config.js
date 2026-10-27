@@ -8,6 +8,7 @@ export const DEFAULTS = Object.freeze({
 
 export const INSTRUCTION_CHECK_INTERVAL = 1000;
 export const MAX_REPLY_DEPTH = 128;
+export const MAX_JSON_DEPTH = 1000;
 
 const { maxMemoryBytes, ...fengariDefaults } = DEFAULTS;
 export const FENGARI_DEFAULTS = Object.freeze(fengariDefaults);

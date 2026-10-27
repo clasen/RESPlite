@@ -99,6 +99,22 @@ it('matches Redis scripting results and stored data, and measures EVAL/EVALSHA l
       expected: [null, 'stop'],
     },
     {
+      name: 'cjson encoding',
+      source: 'return cjson.encode({1,"a/\\"\\n\\127",1.5,1e20,123456789012345678,{x=cjson.null},{},{[1]=1,[3]=3}})',
+      expected: '[1,"a\\/\\"\\n\\u007f",1.5,1e+20,1.2345678901235e+17,{"x":null},{},[1,null,3]]',
+    },
+    {
+      name: 'cjson decoding',
+      source: 'local v=cjson.decode(ARGV[1]); redis.call("SET",KEYS[1],v.n); return {redis.call("GET",KEYS[1]),v.s,v.list[2]==cjson.null and 1 or 0,#v.list,v.list}',
+      options: { keys: ['contract:json'], arguments: ['{"n":2.0,"s":"\\u00e9\\ud83d\\ude00","list":[1,null,"x"]}'] },
+      expected: ['2', 'é😀', 1, 3, [1, null, 'x']],
+    },
+    {
+      name: 'cjson errors',
+      source: 'local ok,e=pcall(cjson.decode,"[1,"); return {ok,e,cjson.encode(cjson.decode("[]"))}',
+      expected: [null, 'Expected value but found T_END at character 4', '{}'],
+    },
+    {
       name: 'first return value only',
       source: 'return ARGV[1],ARGV[2]',
       options: { arguments: ['first', 'second'] },

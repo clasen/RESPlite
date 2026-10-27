@@ -59,6 +59,52 @@ for (const [name, createScripting] of [
       assert.equal(f.eval(`return redis.error_reply('bad\\r\\nreply')`, 0).error, 'bad  reply');
     });
 
+    it('encodes and decodes JSON with cjson like Redis', (t) => {
+      const f = fixture(t);
+      const raw = Buffer.from([0x22, 0xff, 0x2f, 0x0a, 0x7f, 0x01]);
+      assert.deepEqual(f.eval('return cjson.encode({ARGV[1],1.5,1e20,0.1,-0.0,123456789012345678,3,true,{x=cjson.null},{},{[1]=1,[3]=3}})', 0, raw).result,
+        Buffer.concat([Buffer.from('["\\"'), Buffer.from([0xff]), Buffer.from('\\/\\n\\u007f\\u0001",1.5,1e+20,0.1,-0,1.2345678901235e+17,3,true,{"x":null},{},[1,null,3]]')]));
+      assert.equal(f.eval('return cjson.encode({[1.5]=1})', 0).result.toString(), '{"1.5":1}');
+      const json = Buffer.concat([Buffer.from('{"n":2.0,"f":2.5,"big":1e300,"s":"\\u00e9\\ud83d\\ude00\\/\\n","raw":"'), Buffer.from([0xff]), Buffer.from('","list":[1,null,"x"],"empty":{}}')]);
+      const result = f.eval(`local v = cjson.decode(ARGV[1])
+        redis.call('SET', KEYS[1], v.n)
+        return {redis.call('GET', KEYS[1]), tostring(v.f), v.big > 1e299 and 1 or 0, v.s, v.raw,
+          v.list[2] == cjson.null and 1 or 0, #v.list, v.list, next(v.empty) == nil and 1 or 0, type(cjson.null)}`, 1, 'json', json).result;
+      assert.deepEqual(result, [Buffer.from('2'), Buffer.from('2.5'), 1, Buffer.from('é😀/\n'), Buffer.from([0xff]), 1, 3,
+        [1, null, Buffer.from('x')], 1, Buffer.from('userdata')]);
+      assert.deepEqual(f.eval('return cjson.decode(cjson.encode(cjson.decode(ARGV[1])))', 0, '[1,[true,false],"a"]').result, [1, [1, null], Buffer.from('a')]);
+      assert.deepEqual(f.eval('return cjson.decode(123)', 0), { result: 123 });
+      assert.deepEqual(f.eval('return cjson.null', 0), { result: null });
+      assert.deepEqual(f.eval('return {pcall(cjson.decode, "[1,")}', 0).result, [null, Buffer.from('Expected value but found T_END at character 4')]);
+    });
+
+    it('rejects values and documents cjson cannot represent', (t) => {
+      const f = fixture(t);
+      const encodeError = (value) => f.eval(`local t = ${value} return cjson.encode(t)`, 0).error;
+      assert.match(encodeError('{[1]=1,[20]=2}'), /excessively sparse array/);
+      assert.match(encodeError('{[true]=1}'), /Cannot serialise boolean: table key must be a number or string/);
+      assert.match(encodeError('function() end'), /Cannot serialise function: type not supported/);
+      assert.match(encodeError('0/0'), /must not be NaN or Inf/);
+      assert.match(encodeError('{} t[1] = t'), /excessive nesting \(1001\)/);
+      assert.deepEqual(f.eval('local t = {} local c = t for i = 1, 999 do c[1] = {} c = c[1] end return #cjson.encode(t)', 0), { result: 2000 });
+      assert.match(f.eval('return cjson.encode()', 0).error, /bad argument #1 to 'encode' \(expected 1 argument\)/);
+      assert.match(f.eval('return cjson.decode({})', 0).error, /string expected, got table/);
+      const decodeError = (json) => f.eval('return cjson.decode(ARGV[1])', 0, json).error;
+      assert.match(decodeError(''), /Expected value but found T_END at character 1$/);
+      assert.match(decodeError('{1:2}'), /Expected object key string but found T_NUMBER at character 2$/);
+      assert.match(decodeError('{"a" 1}'), /Expected colon but found T_NUMBER at character 6$/);
+      assert.match(decodeError('{"a":1,}'), /Expected object key string but found T_OBJ_END at character 8$/);
+      assert.match(decodeError('[1 2]'), /Expected comma or array end but found T_NUMBER at character 4$/);
+      assert.match(decodeError('[1] x'), /Expected the end but found invalid token at character 5$/);
+      assert.match(decodeError('nul'), /found invalid token at character 1$/);
+      assert.match(decodeError('-'), /found invalid number at character 1$/);
+      assert.match(decodeError('"abc'), /found unexpected end of string at character 5$/);
+      assert.match(decodeError('"\\x"'), /found invalid escape code at character 2$/);
+      assert.match(decodeError('"\\ud800"'), /found invalid unicode escape code at character 2$/);
+      assert.match(decodeError('['.repeat(1001) + ']'.repeat(1001)), /too many nested data structures \(1001\) at character 1001$/);
+      assert.deepEqual(f.eval('return #cjson.decode(ARGV[1])', 0, '['.repeat(1000) + ']'.repeat(1000)), { result: 1 });
+    });
+
     it('keeps prior writes after errors and isolates global mutations', (t) => {
       const f = fixture(t);
       assert.match(f.eval(`redis.call('SET','k','v'); redis.call('HSET','k','f','x')`, 0).error, /WRONGTYPE/);

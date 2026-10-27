@@ -1,11 +1,11 @@
 import { MAX_REPLY_DEPTH } from './config.js';
 
-export const LUA = { OK: 0, YIELD: 1, NIL: 0, BOOLEAN: 1, NUMBER: 3, STRING: 4, TABLE: 5, COUNT: 8 };
+export const LUA = { OK: 0, YIELD: 1, NIL: 0, BOOLEAN: 1, LIGHTUSERDATA: 2, NUMBER: 3, STRING: 4, TABLE: 5, COUNT: 8 };
 export const BOOTSTRAP = Buffer.from(`
 local keep = {
   _VERSION=true, assert=true, error=true, ipairs=true, next=true, pairs=true,
   pcall=true, select=true, tonumber=true, tostring=true, type=true, xpcall=true,
-  string=true, table=true, math=true, KEYS=true, ARGV=true, redis=true
+  string=true, table=true, math=true, KEYS=true, ARGV=true, redis=true, cjson=true
 }
 local globals = _G
 for name in pairs(globals) do if not keep[name] then globals[name] = nil end end
@@ -24,6 +24,14 @@ end
 function redis.status_reply(message)
   if type(message) ~= 'string' then error('ERR status_reply requires a string', 0) end
   return {ok=message}
+end
+for _, name in ipairs({'encode', 'decode'}) do
+  local native = cjson[name]
+  cjson[name] = function(...)
+    local ok, value = native(...)
+    if not ok then error(value, 2) end
+    return value
+  end
 end
 `);
 
@@ -56,7 +64,8 @@ export function createReplyCodec(lua, { pushBytes, readBytes, timedOut, timeoutE
     if (!lua.lua_checkstack(L, 4)) throw new Error('ERR Lua reply stack exhausted');
     index = lua.lua_absindex(L, index);
     switch (lua.lua_type(L, index)) {
-      case LUA.NIL: return null;
+      case LUA.NIL:
+      case LUA.LIGHTUSERDATA: return null;
       case LUA.BOOLEAN: return lua.lua_toboolean(L, index) ? 1 : null;
       case LUA.STRING: return readBytes(L, index);
       case LUA.NUMBER: {

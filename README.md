@@ -143,6 +143,8 @@ Available commands inside scripts are the implemented string, hash, set, non-blo
 
 Each execution has a fresh Lua state. Basic functions (`assert`, `error`, `ipairs`, `next`, `pairs`, `pcall`, `select`, `tonumber`, `tostring`, `type`, `xpcall`) and the `string`, `table`, and `math` libraries are available, except `string.dump`. Filesystem, OS, JavaScript, module loading, metatable access, coroutines and external bytecode are not exposed.
 
+`cjson.encode`, `cjson.decode` and `cjson.null` follow Redis' default `cjson` behavior: `/` is escaped, numbers use 14 significant digits, empty tables encode as `{}`, arrays with holes encode `null` unless excessively sparse, and nesting is limited to 1,000 levels. JSON `null` decodes to `cjson.null`, which a script reply converts to RESP null. Strings are bytes in both directions; `\u` escapes decode to UTF-8. Decoding accepts standard JSON numbers only and returns Lua integers for integral values within the runtime's integer range. Other `cjson` functions and settings are not available.
+
 The trusted internal bootstrap is compiled once per supplied Lua module and reused as bytecode. User scripts remain text-only and are compiled for each execution; `EVALSHA` reuses the cached SHA-1 without hashing the source again.
 
 Scripts execute synchronously: other clients of the same server cannot interleave commands, TTL checks use the script's starting time, and blocked list consumers wake after execution finishes. **Errors and timeouts preserve writes already performed.** Atomic execution does not imply rollback or isolation from other processes independently opening the SQLite file.
@@ -165,7 +167,7 @@ All limits must be positive safe integers. A script larger than either source/ca
 
 For manual wiring, pass `{ pubSub, scripting }` as the fifth argument to `handleConnection()`, reuse the same engine/plugin for that server, and call `scripting.close()` during teardown. Closing is idempotent; the injected Lua module remains owned by the application. Plain CLI startup does not load a plugin automatically; use a JavaScript launcher to prepare one.
 
-The adapters provide Lua 5.3 (Fengari) or Lua 5.4 (Wasmoon) scripting subsets, not full compatibility with Redis Lua 5.1. `cjson`, `cmsgpack`, `bit`, `SCRIPT KILL`, `BUSY`, Redis Functions, read-only scripting variants and persistent scripts are not implemented.
+The adapters provide Lua 5.3 (Fengari) or Lua 5.4 (Wasmoon) scripting subsets, not full compatibility with Redis Lua 5.1. `cmsgpack`, `bit`, `SCRIPT KILL`, `BUSY`, Redis Functions, read-only scripting variants and persistent scripts are not implemented.
 
 #### Wasmoon adapter (resource limits)
 
