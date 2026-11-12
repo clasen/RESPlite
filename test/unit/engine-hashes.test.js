@@ -453,6 +453,24 @@ describe('Engine hash field TTL', () => {
     assert.equal(all[0].toString(), 'f2');
   });
 
+  it('treats a field as expired when its expiry equals the current time', () => {
+    const { engine, advance } = makeEngine(1_000_000);
+    engine.hset('h', 'gone', '1', 'live', '2', 'plain', '3');
+    engine.hset('only', 'gone', '1');
+    engine.hexpire('h', engine._clock() + 1000, [Buffer.from('gone')]);
+    engine.hexpire('h', engine._clock() + 1001, [Buffer.from('live')]);
+    engine.hexpire('only', engine._clock() + 1000, [Buffer.from('gone')]);
+    advance(1000);
+
+    assert.equal(engine.dbsize(), 1);
+    assert.equal(engine.hlen('h'), 2);
+    assert.deepEqual(engine.hscan('h', 0, { noValues: true }).values.map(String), ['live', 'plain']);
+    assert.deepEqual(engine.hgetall('h').map(String), ['live', '2', 'plain', '3']);
+    assert.deepEqual(engine.hmget('h', ['gone', 'live']).map((v) => v && v.toString()), [null, '2']);
+    assert.equal(engine.hget('h', 'gone'), null);
+    assert.equal(engine.hget('h', 'live').toString(), '2');
+  });
+
   it('empty hash after lazy expiration removes the key', () => {
     const { engine, advance } = makeEngine(1_000_000);
     engine.hset('h', 'f1', 'v1');

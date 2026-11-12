@@ -74,9 +74,11 @@ export function createKeysStorage(db: Database) {
           OR EXISTS (
             SELECT 1
               FROM redis_hashes h
-              LEFT JOIN redis_hash_field_ttl t ON t.key = h.key AND t.field = h.field
              WHERE h.key = k.key
-               AND (t.expires_at IS NULL OR t.expires_at > ?)
+               AND NOT EXISTS (
+                 SELECT 1 FROM redis_hash_field_ttl t
+                  WHERE t.key = h.key AND t.field = h.field AND t.expires_at <= ?
+               )
           )
         )`
   ).pluck();

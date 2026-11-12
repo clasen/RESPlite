@@ -40,6 +40,7 @@ const TEMPLATES: Record<string, Record<string, string | number>> = {
   },
   minimal: {
     journal_mode: 'WAL',
+    synchronous: 'NORMAL',        // explicit: the default differs between Node (FULL) and Bun (NORMAL)
     foreign_keys: 'ON',
   },
   none: {},

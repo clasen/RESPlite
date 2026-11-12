@@ -51,6 +51,7 @@ describe('Pragma templates', () => {
     try {
       const journal = db.prepare('PRAGMA journal_mode').get();
       assert.equal(journal.journal_mode, 'wal');
+      assert.equal(db.prepare('PRAGMA synchronous').get().synchronous, 1); // NORMAL on every runtime
     } finally {
       db.close();
     }

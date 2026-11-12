@@ -17,6 +17,7 @@
 
 import { createClient } from 'redis';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -122,6 +123,15 @@ async function connect(name, port) {
     console.error(`Cannot connect to ${name} on port ${port}: ${err.message}`);
     process.exit(1);
   }
+}
+
+/** True when something already accepts connections on the port. */
+function isPortInUse(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ port, host: '127.0.0.1' });
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('error', () => resolve(false));
+  });
 }
 
 /** Wait until a port accepts connections or timeout. Returns true if ready. */
@@ -888,6 +898,13 @@ async function main() {
   if (cacheOnly) console.log(`  Suites: cache-focused only (${suites.length})`);
   if (newHashOnly) console.log(`  Suites: new hash commands only (${suites.length})`);
   console.log('');
+
+  for (let i = 0; i < variants.length; i++) {
+    if (await isPortInUse(resplitePort + i)) {
+      console.error(`Port ${resplitePort + i} is already in use; pass a free base port with --resplite-port.`);
+      process.exit(1);
+    }
+  }
 
   const children = [];
   for (let i = 0; i < variants.length; i++) {

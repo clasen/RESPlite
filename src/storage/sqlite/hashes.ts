@@ -24,10 +24,11 @@ interface FieldState {
 export function createHashesStorage(db: Database, keys: KeysStorage, options: { clock?: () => number } = {}) {
   const clock = options.clock ?? (() => Date.now());
 
+  // Field TTL lookups use subqueries: SQLite 3.54 runs the equivalent LEFT JOIN several times slower.
   const getFieldStateStmt = db.prepare(
-    `SELECT h.value, t.expires_at AS expiresAt
+    `SELECT h.value,
+            (SELECT t.expires_at FROM redis_hash_field_ttl t WHERE t.key = h.key AND t.field = h.field) AS expiresAt
        FROM redis_hashes h
-       LEFT JOIN redis_hash_field_ttl t ON t.key = h.key AND t.field = h.field
       WHERE h.key = ? AND h.field = ?`
   );
   const getAllStmt = db.prepare('SELECT field, value FROM redis_hashes WHERE key = ?').raw(true);
@@ -35,16 +36,22 @@ export function createHashesStorage(db: Database, keys: KeysStorage, options: { 
     .prepare(
       `SELECT h.field, h.value
          FROM redis_hashes h
-         LEFT JOIN redis_hash_field_ttl t ON t.key = h.key AND t.field = h.field
-        WHERE h.key = ? AND (t.expires_at IS NULL OR t.expires_at > ?)`
+        WHERE h.key = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM redis_hash_field_ttl t
+             WHERE t.key = h.key AND t.field = h.field AND t.expires_at <= ?
+          )`
     )
     .raw(true);
   const scanLiveStmt = db
     .prepare(
       `SELECT h.field, h.value
          FROM redis_hashes h
-         LEFT JOIN redis_hash_field_ttl t ON t.key = h.key AND t.field = h.field
-        WHERE h.key = ? AND (t.expires_at IS NULL OR t.expires_at > ?)
+        WHERE h.key = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM redis_hash_field_ttl t
+             WHERE t.key = h.key AND t.field = h.field AND t.expires_at <= ?
+          )
         ORDER BY h.field
         LIMIT ? OFFSET ?`
     )
@@ -62,8 +69,11 @@ export function createHashesStorage(db: Database, keys: KeysStorage, options: { 
   const countLiveStmt = db.prepare(
     `SELECT COUNT(*) AS n
        FROM redis_hashes h
-       LEFT JOIN redis_hash_field_ttl t ON t.key = h.key AND t.field = h.field
-      WHERE h.key = ? AND (t.expires_at IS NULL OR t.expires_at > ?)`
+      WHERE h.key = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM redis_hash_field_ttl t
+           WHERE t.key = h.key AND t.field = h.field AND t.expires_at <= ?
+        )`
   );
   const hasAnyTtlStmt = db.prepare('SELECT 1 FROM redis_hash_field_ttl WHERE key = ? LIMIT 1').pluck();
 
@@ -160,9 +170,9 @@ export function createHashesStorage(db: Database, keys: KeysStorage, options: { 
         fieldStateListStmts,
         chunk.length,
         (placeholders) => (
-          `SELECT h.field, t.expires_at AS expiresAt
+          `SELECT h.field,
+                  (SELECT t.expires_at FROM redis_hash_field_ttl t WHERE t.key = h.key AND t.field = h.field) AS expiresAt
              FROM redis_hashes h
-             LEFT JOIN redis_hash_field_ttl t ON t.key = h.key AND t.field = h.field
             WHERE h.key = ? AND h.field IN (${placeholders})`
         )
       );

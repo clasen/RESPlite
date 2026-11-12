@@ -23,15 +23,15 @@ The strongest use case is **migrating a non-replicated Redis instance that has g
 
 ### Benchmark snapshot
 
-Representative results against Redis in Docker on the same host (10k iterations per suite):
+Representative results against a native Redis 8.4 on the same host (10k iterations per suite). RESPLite leads on most reads; Redis keeps the lead on write-heavy multi-command suites:
 
-| Suite         | Redis (Docker) | RESPLite (default) |
+| Suite         | Redis (native) | RESPLite (default) |
 |---------------|----------------|--------------------|
-| PING          | 9.32K/s        | 25.14K/s           |
-| SET+GET       | 4.75K/s        | 8.92K/s            |
-| HSET+HGET     | 4.72K/s        | 9.75K/s            |
-| ZADD+ZRANGE   | 8.49K/s        | 11.38K/s           |
-| FT.SEARCH     | 8.32K/s        | 7.70K/s            |
+| PING          | 14.31K/s       | 25.74K/s           |
+| SET+GET       | 7.26K/s        | 11.09K/s           |
+| HSET+HGET     | 7.32K/s        | 11.43K/s           |
+| ZADD+ZRANGE   | 12.99K/s       | 11.53K/s           |
+| LPUSH+LRANGE  | 13.14K/s       | 10.06K/s           |
 
 The full benchmark table is available later in [Benchmark](#benchmark-redis-vs-resplite).
 
@@ -745,7 +745,7 @@ A **template** is applied by default (`default`); you usually don't pass anythin
 | `default` | Balanced durability and speed (recommended) | WAL, synchronous=NORMAL, 20 MB cache |
 | `performance` | Maximum throughput, reduced crash safety | WAL, synchronous=OFF, 64 MB cache, 512 MB mmap, exclusive locking |
 | `safety` | Crash-safe writes at the cost of speed | WAL, synchronous=FULL, 20 MB cache |
-| `minimal` | Only WAL + foreign keys | WAL, foreign_keys=ON |
+| `minimal` | Only WAL, sync mode and foreign keys | WAL, synchronous=NORMAL, foreign_keys=ON |
 | `none` | No pragmas applied, pure SQLite defaults | - |
 
 Override specific pragmas only when needed. Overrides are applied after the template. Example — 1 GB cache:
@@ -765,53 +765,61 @@ A batch holds the database write lock until it commits. If several processes wri
 
 ## Benchmark (Redis vs RESPLite)
 
-A typical comparison is **Redis (for example, in Docker)** on one side and **RESPLite locally** on the other. In that setup, RESPLite can show **better latency** because it avoids Docker networking. The benchmark starts each RESPLite PRAGMA template in an isolated process on the host.
+The comparison below runs Redis natively on the same host as RESPLite. Redis in Docker adds network overhead and widens RESPLite's lead, so compare against the setup you deploy. The benchmark starts each RESPLite PRAGMA template in an isolated process on the host.
 
-**Example results (Redis vs all RESPLite PRAGMA templates, 10k iterations per suite):**
+**Example results (native Redis 8.4 vs all RESPLite PRAGMA templates on Node.js 22, 10k iterations per suite):**
 
 Throughput is measured in complete suite iterations per second, so a row such as `SET+GET` represents one `SET`/`GET` pair per iteration rather than two separately counted commands.
 
-| Suite | Redis (Docker) | default | performance | safety | minimal |
+| Suite | Redis (native) | default | performance | safety | minimal |
 |---|---:|---:|---:|---:|---:|
-| PING | 9.32K/s | 25.14K/s | 25.19K/s | 25.11K/s | 25.30K/s |
-| SET+GET | 4.75K/s | 8.92K/s | 10.22K/s | 7.42K/s | 8.87K/s |
-| GET (hot) | 9.54K/s | 26.20K/s | 26.17K/s | 26.11K/s | 26.29K/s |
-| MSET+MGET(10) | 4.32K/s | 6.79K/s | 7.73K/s | 5.93K/s | 6.79K/s |
-| INCR | 10.55K/s | 15.30K/s | 19.95K/s | 11.62K/s | 15.31K/s |
-| HSET+HGET | 4.72K/s | 9.75K/s | 11.04K/s | 8.05K/s | 9.78K/s |
-| HGET (uncached) | 9.27K/s | 20.00K/s | 21.07K/s | 19.93K/s | 19.98K/s |
-| HGET (hot) | 9.07K/s | 15.45K/s | 14.44K/s | 15.82K/s | 16.45K/s |
-| HMGET(10) (hot) | 8.33K/s | 20.37K/s | 20.40K/s | 20.39K/s | 20.46K/s |
-| HGETALL(50) | 8.49K/s | 11.58K/s | 11.56K/s | 11.59K/s | 11.58K/s |
-| HLEN(50) (uncached) | 9.00K/s | 23.40K/s | 24.42K/s | 23.46K/s | 23.46K/s |
-| HLEN(50) (hot) | 9.51K/s | 28.68K/s | 28.60K/s | 28.59K/s | 28.93K/s |
-| SADD+SMEMBERS | 9.25K/s | 16.35K/s | 16.87K/s | 12.18K/s | 16.28K/s |
-| LPUSH+LRANGE | 9.37K/s | 10.38K/s | 11.23K/s | 8.45K/s | 10.36K/s |
-| LREM | 4.47K/s | 4.60K/s | 4.93K/s | 3.83K/s | 4.60K/s |
-| ZADD+ZRANGE | 8.49K/s | 11.38K/s | 12.49K/s | 9.16K/s | 11.35K/s |
-| ZADD+ZREVRANGE | 8.21K/s | 10.85K/s | 12.03K/s | 8.85K/s | 10.85K/s |
-| ZRANK+ZREVRANK | 5.13K/s | 9.93K/s | 10.58K/s | 9.93K/s | 9.95K/s |
-| ZREVRANGEBYSCORE | 9.49K/s | 14.22K/s | 14.66K/s | 14.20K/s | 14.22K/s |
-| SET+DEL | 5.12K/s | 5.62K/s | 6.17K/s | 4.65K/s | 5.62K/s |
-| STRLEN | 10.15K/s | 27.53K/s | 27.58K/s | 27.55K/s | 27.73K/s |
-| HKEYS(50) | 9.25K/s | 17.51K/s | 17.53K/s | 17.55K/s | 17.60K/s |
-| HVALS(50) | 8.99K/s | 15.94K/s | 15.92K/s | 15.95K/s | 15.96K/s |
-| LSET | 9.46K/s | 17.83K/s | 19.26K/s | 13.08K/s | 17.83K/s |
-| LTRIM | 3.09K/s | 2.92K/s | 3.18K/s | 2.51K/s | 2.92K/s |
-| RENAME | 4.62K/s | 5.38K/s | 5.80K/s | 4.46K/s | 5.38K/s |
-| ZCOUNT | 9.68K/s | 19.57K/s | 19.54K/s | 19.54K/s | 19.52K/s |
-| ZCARD(100) | 9.28K/s | 22.24K/s | 23.32K/s | 22.31K/s | 22.34K/s |
-| ZINCRBY | 9.19K/s | 15.59K/s | 16.58K/s | 11.82K/s | 15.42K/s |
-| ZREMRANGEBYRANK (pure) | 4.66K/s | 5.20K/s | 5.56K/s | 4.17K/s | 5.05K/s |
-| ZREMRANGEBYSCORE (pure) | 4.46K/s | 5.78K/s | 6.21K/s | 4.68K/s | 5.77K/s |
-| ZREMRANGEBYRANK (churn) | 2.34K/s | 1.42K/s | 1.51K/s | 1.31K/s | 1.42K/s |
-| ZREMRANGEBYSCORE (churn) | 2.32K/s | 1.51K/s | 1.61K/s | 1.38K/s | 1.51K/s |
-| SPOP | 9.41K/s | 13.06K/s | 13.90K/s | 10.15K/s | 13.01K/s |
-| SRANDMEMBER | 8.95K/s | 14.96K/s | 15.54K/s | 15.04K/s | 14.91K/s |
-| HINCRBY | 8.69K/s | 14.08K/s | 15.26K/s | 10.65K/s | 14.08K/s |
-| FT.SEARCH | 8.32K/s | 7.70K/s | 7.56K/s | 7.81K/s | 7.87K/s |
+| PING | 14.31K/s | 25.74K/s | 25.78K/s | 26.02K/s | 25.66K/s |
+| SET+GET | 7.26K/s | 11.09K/s | 12.78K/s | 9.04K/s | 11.10K/s |
+| GET (hot) | 14.85K/s | 26.64K/s | 26.61K/s | 26.99K/s | 26.48K/s |
+| MSET+MGET(10) | 6.77K/s | 7.39K/s | 8.43K/s | 6.41K/s | 7.37K/s |
+| INCR | 15.00K/s | 14.38K/s | 18.49K/s | 11.13K/s | 14.44K/s |
+| HSET+HGET | 7.32K/s | 11.43K/s | 12.66K/s | 9.38K/s | 11.40K/s |
+| HGET (uncached) | 14.54K/s | 22.32K/s | 22.87K/s | 22.41K/s | 22.27K/s |
+| HGET (hot) | 14.78K/s | 26.13K/s | 26.17K/s | 26.28K/s | 25.95K/s |
+| HMGET(10) (hot) | 14.15K/s | 20.78K/s | 20.82K/s | 20.90K/s | 20.76K/s |
+| HGETALL(50) | 12.32K/s | 11.50K/s | 11.49K/s | 11.51K/s | 11.47K/s |
+| HLEN(50) (uncached) | 15.06K/s | 23.32K/s | 24.13K/s | 23.38K/s | 23.26K/s |
+| HLEN(50) (hot) | 14.83K/s | 26.96K/s | 27.00K/s | 27.23K/s | 26.82K/s |
+| SMEMBERS(50) (hot) | 13.25K/s | 16.13K/s | 16.13K/s | 16.19K/s | 16.09K/s |
+| SISMEMBER(50) (hot) | 14.91K/s | 26.73K/s | 26.73K/s | 27.06K/s | 26.66K/s |
+| LRANGE(20/50) (hot) | 13.85K/s | 19.83K/s | 19.83K/s | 19.90K/s | 19.76K/s |
+| LINDEX(50) (hot) | 14.72K/s | 25.67K/s | 25.68K/s | 25.98K/s | 25.56K/s |
+| ZRANGE(20/100) (hot) | 14.06K/s | 20.26K/s | 20.22K/s | 20.36K/s | 20.19K/s |
+| ZSCORE(100) (hot) | 14.39K/s | 26.49K/s | 26.48K/s | 26.69K/s | 26.33K/s |
+| SADD+SMEMBERS | 13.07K/s | 17.83K/s | 18.53K/s | 12.54K/s | 17.81K/s |
+| LPUSH+LRANGE | 13.14K/s | 10.06K/s | 12.44K/s | 9.28K/s | 11.51K/s |
+| LREM | 7.21K/s | 5.24K/s | 5.64K/s | 4.30K/s | 5.24K/s |
+| ZADD+ZRANGE | 12.99K/s | 11.53K/s | 14.19K/s | 9.93K/s | 12.89K/s |
+| ZADD+ZREVRANGE | 13.05K/s | 12.43K/s | 14.85K/s | 10.55K/s | 13.62K/s |
+| ZRANK+ZREVRANK | 7.22K/s | 10.19K/s | 10.96K/s | 10.32K/s | 10.14K/s |
+| ZREVRANGEBYSCORE | 13.79K/s | 14.73K/s | 15.27K/s | 14.78K/s | 14.65K/s |
+| SET+DEL | 7.42K/s | 6.22K/s | 6.75K/s | 4.96K/s | 6.26K/s |
+| STRLEN | 14.99K/s | 27.72K/s | 27.72K/s | 28.12K/s | 27.62K/s |
+| HKEYS(50) | 13.52K/s | 15.91K/s | 15.93K/s | 16.00K/s | 15.88K/s |
+| HVALS(50) | 13.51K/s | 15.70K/s | 15.69K/s | 15.72K/s | 15.61K/s |
+| LSET | 14.78K/s | 20.01K/s | 21.83K/s | 10.92K/s | 20.07K/s |
+| LTRIM | 4.80K/s | 3.15K/s | 3.42K/s | 2.65K/s | 3.15K/s |
+| RENAME | 7.44K/s | 6.13K/s | 6.64K/s | 4.93K/s | 6.14K/s |
+| ZCOUNT | 14.50K/s | 22.29K/s | 23.53K/s | 22.42K/s | 22.18K/s |
+| ZCARD(100) | 15.08K/s | 23.45K/s | 24.69K/s | 23.60K/s | 23.30K/s |
+| ZINCRBY | 14.33K/s | 17.10K/s | 18.58K/s | 12.23K/s | 17.15K/s |
+| ZREMRANGEBYRANK (pure) | 6.90K/s | 5.62K/s | 6.45K/s | 4.51K/s | 5.57K/s |
+| ZREMRANGEBYSCORE (pure) | 6.86K/s | 6.71K/s | 6.84K/s | 5.10K/s | 6.69K/s |
+| ZREMRANGEBYRANK (churn) | 3.13K/s | 1.53K/s | 1.63K/s | 1.40K/s | 1.53K/s |
+| ZREMRANGEBYSCORE (churn) | 3.13K/s | 1.63K/s | 1.73K/s | 1.48K/s | 1.62K/s |
+| SPOP | 13.92K/s | 15.27K/s | 16.45K/s | 11.74K/s | 15.25K/s |
+| SRANDMEMBER | 14.86K/s | 17.22K/s | 17.65K/s | 17.24K/s | 17.17K/s |
+| HINCRBY | 14.66K/s | 19.56K/s | 20.97K/s | 13.52K/s | 19.57K/s |
+| FT.SEARCH | 9.16K/s* | 7.11K/s | 8.22K/s | 7.17K/s | 7.13K/s |
 
-In this run, the `default` template was faster than Redis in 33 of 37 suites. Redis remained faster for both churn-heavy sorted-set removal suites, `LTRIM`, and `FT.SEARCH`.
+\* The native Redis build does not include the search module, so the `FT.SEARCH` Redis figure comes from a separate run against Redis Stack 7.4 in Docker on the same host.
+
+In this run, the `default` template was faster than Redis in 29 of 43 suites. Redis stayed ahead on `HGETALL(50)`, `FT.SEARCH`, and write-heavy multi-command suites: `INCR`, `LPUSH+LRANGE`, `LREM`, `ZADD+ZRANGE`, `ZADD+ZREVRANGE`, `SET+DEL`, `LTRIM`, `RENAME`, and the sorted-set range removals.
 
 **Memory after the same run:**
 
@@ -819,13 +827,13 @@ Redis `used_memory` and Node.js `heapUsed` describe different allocators and sho
 
 | Process | Reported memory | RSS | RSS delta |
 |---|---:|---:|---:|
-| Redis | `used_memory` 7.16 MB | 26.42 MB | — |
-| RESPLite `default` | `heapUsed` 20.40 MB | 103.58 MB | +45.08 MB |
-| RESPLite `performance` | `heapUsed` 15.62 MB | 105.67 MB | +44.86 MB |
-| RESPLite `safety` | `heapUsed` 14.07 MB | 103.14 MB | +44.66 MB |
-| RESPLite `minimal` | `heapUsed` 15.87 MB | 104.30 MB | +45.81 MB |
+| Redis | `used_memory` 4.44 MB | 7.91 MB | — |
+| RESPLite `default` | `heapUsed` 12.77 MB | 136.84 MB | +44.33 MB |
+| RESPLite `performance` | `heapUsed` 12.44 MB | 148.34 MB | +48.00 MB |
+| RESPLite `safety` | `heapUsed` 21.47 MB | 137.70 MB | +40.11 MB |
+| RESPLite `minimal` | `heapUsed` 21.89 MB | 151.38 MB | +55.45 MB |
 
-All four RESPLite variants finished with the application cache enabled and the same counters: 20 entries (3.57 KB), 199,999 hits, 30,006 misses, and an 86.95% hit ratio. The benchmark coordinator process finished at 11.29 MB heap used and 72.08 MB RSS; its heap delta was -11.08 MB.
+All four RESPLite variants finished with the application cache enabled and the same counters: 26 entries (8.46 KB), 259,999 hits, 94,012 misses, and a 73.44% hit ratio. The benchmark coordinator process finished at 32.73 MB heap used and 132.80 MB RSS; its heap delta was -0.09 MB.
 
 To reproduce the all-template benchmark, run `npm run benchmark`. Use `npm run benchmark -- --template default` to measure only the default template. Numbers depend on the host, process state, and whether Redis is native or in Docker; compare results from the same run rather than treating this snapshot as a universal performance guarantee.
 
