@@ -19,7 +19,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from 'redis';
-import { createMigration, startDirtyTracker } from '../../src/migration/index.js';
+import { createMigration, startDirtyTracker } from '../../src/migration/index.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 const REDIS_URL = 'redis://127.0.0.1:6379';

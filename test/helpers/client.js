@@ -3,8 +3,8 @@
  */
 
 import net from 'node:net';
-import { encode } from '../../src/resp/encoder.js';
-import { tryParseValue } from '../../src/resp/parser.js';
+import { encode } from '../../src/resp/encoder.ts';
+import { tryParseValue } from '../../src/resp/parser.ts';
 
 /**
  * Send a RESP array command and return the raw response buffer (one complete RESP message).

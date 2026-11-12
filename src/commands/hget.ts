@@ -1,0 +1,18 @@
+/**
+ * HGET key field
+ */
+
+import type { CommandReply, Engine } from '../types.ts';
+
+export function handleHget(engine: Engine, args: Buffer[]): CommandReply {
+  if (!args || args.length < 2) {
+    return { error: 'ERR wrong number of arguments for \'HGET\' command' };
+  }
+  try {
+    const value = engine.hget(args[0], args[1]);
+    return value;
+  } catch (e) {
+    const msg = e instanceof Error && e.message ? e.message : String(e);
+    return { error: msg.startsWith('ERR ') ? msg : msg.startsWith('WRONGTYPE') ? msg : 'ERR ' + msg };
+  }
+}

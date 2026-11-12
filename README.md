@@ -8,7 +8,7 @@ RESPLite speaks **RESP** (the Redis Serialization Protocol), so your existing `r
 
 It is not a Redis clone. It covers a practical subset of commands that map naturally to SQLite, suited for single-node workloads where Redis' in-memory latency is not a hard requirement.
 
-- **Zero external services** — just Node.js and a `.db` file.
+- **Zero external services** — just Node.js or Bun and a `.db` file.
 - **Client-compatible** — works with the official `redis` npm client and `redis-cli` for the supported command subset.
 - **Persistent by default** — no snapshots, no AOF, no config.
 - **Embeddable** — start the server and connect from the same script.
@@ -40,6 +40,8 @@ The full benchmark table is available later in [Benchmark](#benchmark-redis-vs-r
 ```bash
 npm install resplite
 ```
+
+Requires Node.js 22.18+ or Bun. RESPLite uses the runtime's built-in `node:sqlite` module, so there is no native dependency to compile. On Node.js 22 the module still prints an `ExperimentalWarning` on first use.
 
 ## AI Skill
 
@@ -228,6 +230,12 @@ Behavior:
 ## Migration from Redis
 
 RESPLite is a good fit for migrating **non-replicated Redis** instances that have **grown large** (e.g. tens of GB) and where RESPLite's latency is acceptable. The recommended path is to drive the migration from a Node.js script via `resplite/migration`, keeping preflight, dirty tracking, bulk import, cutover, and verification in one place.
+
+`resplite/migration` connects to the source with the `redis` client, an optional peer dependency. Install it in the application that runs the migration:
+
+```bash
+npm install redis@4
+```
 
 ### Recommended migration script
 
@@ -605,6 +613,11 @@ console.log(scanResult);  // → { cursor: 0, keys: [...] }
 // Key type
 console.log(await client.type('user:1'));  // → "hash"
 
+// Redis-style server report and per-key stored size
+const info  = await client.info();             // all sections
+const stats = await client.info('keyspace');   // one section
+const bytes = await client.memoryUsage('user:1');
+
 // Admin commands (via sendCommand)
 const sqliteInfo = await client.sendCommand(['SQLITE.INFO']);
 const cacheInfo  = await client.sendCommand(['CACHE.INFO']);
@@ -685,6 +698,8 @@ npm start
 
 By default the server listens on port **6379** and stores data in `data.db` in the current directory.
 
+With Bun, run the same entry point directly: `bun src/index.js`.
+
 ```bash
 redis-cli -p 6379
 > PING
@@ -741,6 +756,12 @@ const srv = await createRESPlite({
   pragma: { cache_size: -1024 * 1024 },  // negative = KiB, so 1 GiB
 });
 ```
+
+### Pipelining
+
+Commands that arrive together in one pipelined read (for example, concurrent calls from the `redis` client in the same tick) run in a single SQLite write transaction, and their replies are sent once it commits. This removes most of the per-command commit cost. Each command still succeeds or fails on its own, and replies keep their order. `QUIT`, `MONITOR`, blocking and subscription commands are never batched.
+
+A batch holds the database write lock until it commits. If several processes write to the same `.db` file, they wait for each other's batches.
 
 ## Benchmark (Redis vs RESPLite)
 
@@ -870,7 +891,9 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 | **Search (FT.\*)** | FT.CREATE, FT.INFO, FT.ADD, FT.DEL, FT.GET, FT.SEARCH, FT.SUGADD, FT.SUGGET, FT.SUGDEL |
 | **Pub/Sub** | PUBLISH, SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBSUB CHANNELS, PUBSUB NUMSUB, PUBSUB NUMPAT |
 | **Introspection** | TYPE, OBJECT IDLETIME, SCAN, KEYS, RENAME, MONITOR |
-| **Admin** | DBSIZE, FLUSHDB, FLUSHALL, SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
+| **Admin** | INFO, MEMORY USAGE, MEMORY STATS, MEMORY PURGE, MEMORY HELP, DBSIZE, FLUSHDB, FLUSHALL, SQLITE.INFO, CACHE.INFO, MEMORY.INFO |
+
+`INFO [section ...]` returns the Redis text format with the `server`, `clients`, `memory`, `persistence`, `stats` and `keyspace` sections, plus RESPlite's `sqlite` and `cache` sections. Memory figures come from the Node.js process; `redis_version` reports the Redis release whose semantics RESPlite follows and `resplite_version` the package version. `MEMORY USAGE` reports the stored bytes of the key name and its payload in SQLite (exact, so `SAMPLES` is accepted but ignored), not Redis allocator overhead. `MEMORY PURGE` is a no-op.
 
 RESPlite has one logical database, so `FLUSHDB` and `FLUSHALL` have the same effect. Both accept `SYNC` and `ASYNC` for client compatibility, but SQLite completes either form synchronously. A flush removes the keyspace and all `FT.*` indices, documents, and suggestions; internal migration bookkeeping is preserved.
 
@@ -890,12 +913,17 @@ Unsupported commands return: `ERR command not supported yet`.
 
 ## Scripts
 
+RESPLite is written in TypeScript. `npm run build` compiles `src/` to `dist/`, which is what the package publishes. Development scripts run the TypeScript sources directly.
+
 | Script | Description |
 |---|---|
 | `npm start` | Run the server |
+| `npm run build` | Compile TypeScript to `dist/` |
+| `npm run typecheck` | Type-check without emitting |
 | `npm test` | Run all tests |
 | `npm run test:unit` | Unit tests |
 | `npm run test:integration` | Integration tests |
 | `npm run test:contract` | Contract tests (redis client) |
 | `npm run test:stress` | Stress tests |
+| `npm run test:bun` | All tests under Bun |
 | `npm run benchmark` | Comparative benchmark Redis vs RESPLite |

@@ -1,9 +1,9 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import Database from 'better-sqlite3';
+import Database from '../../src/storage/sqlite/driver.ts';
 import { createTestServer } from '../helpers/server.js';
 import { sendCommand, argv } from '../helpers/client.js';
-import { tryParseValue } from '../../src/resp/parser.js';
+import { tryParseValue } from '../../src/resp/parser.ts';
 
 describe('ZSET integration', () => {
   let s;

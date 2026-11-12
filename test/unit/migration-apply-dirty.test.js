@@ -4,9 +4,9 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb } from '../../src/storage/sqlite/db.js';
-import { runApplyDirty } from '../../src/migration/apply-dirty.js';
-import { createRun, upsertDirtyKey, getDirtyCounts } from '../../src/migration/registry.js';
+import { openDb } from '../../src/storage/sqlite/db.ts';
+import { runApplyDirty } from '../../src/migration/apply-dirty.ts';
+import { createRun, upsertDirtyKey, getDirtyCounts } from '../../src/migration/registry.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 function sleep(ms) {

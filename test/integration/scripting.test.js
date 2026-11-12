@@ -6,11 +6,11 @@ import { once } from 'node:events';
 import { LuaFactory } from 'wasmoon';
 import fengari from 'fengari';
 import { createClient, commandOptions } from 'redis';
-import { createRESPlite, createRESPliteGroup, createEngine, openDb } from '../../src/embed.js';
-import { createWasmoonScripting, createFengariScripting } from '../../src/scripting/index.js';
-import { createServer } from '../../src/server/tcp-server.js';
+import { createRESPlite, createRESPliteGroup, createEngine, openDb } from '../../src/embed.ts';
+import { createWasmoonScripting, createFengariScripting } from '../../src/scripting/index.ts';
+import { createServer } from '../../src/server/tcp-server.ts';
 import { sendCommand, argv } from '../helpers/client.js';
-import { tryParseValue } from '../../src/resp/parser.js';
+import { tryParseValue } from '../../src/resp/parser.ts';
 import { USERNAME_SCRIPT } from '../helpers/scripting.js';
 
 let lua;

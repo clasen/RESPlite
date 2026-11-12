@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runBulkImport } from '../../src/migration/bulk.js';
+import { runBulkImport } from '../../src/migration/bulk.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 function sleep(ms) {

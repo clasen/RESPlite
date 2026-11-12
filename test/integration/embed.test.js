@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { createClient } from 'redis';
-import { createRESPlite, createRESPliteGroup } from '../../src/embed.js';
+import { createRESPlite, createRESPliteGroup } from '../../src/embed.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 async function redisClient(port) {

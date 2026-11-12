@@ -1,12 +1,12 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createPubSubOutput } from '../../src/pubsub/output.js';
-import { pubSubConfig } from '../../src/pubsub/config.js';
-import { createPubSubBroker } from '../../src/pubsub/broker.js';
-import { handleConnection } from '../../src/server/connection.js';
-import { encode } from '../../src/resp/encoder.js';
-import { tryParseValue } from '../../src/resp/parser.js';
+import { createPubSubOutput } from '../../src/pubsub/output.ts';
+import { pubSubConfig } from '../../src/pubsub/config.ts';
+import { createPubSubBroker } from '../../src/pubsub/broker.ts';
+import { handleConnection } from '../../src/server/connection.ts';
+import { encode } from '../../src/resp/encoder.ts';
+import { tryParseValue } from '../../src/resp/parser.ts';
 
 class Socket extends EventEmitter {
   writable = true;

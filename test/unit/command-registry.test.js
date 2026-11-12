@@ -1,6 +1,6 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { dispatch } from '../../src/commands/registry.js';
+import { dispatch } from '../../src/commands/registry.ts';
 
 it('keeps arguments binary until an error hook needs text', () => {
   const bytes = Buffer.from([0, 255, 195, 40]);

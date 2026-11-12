@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { importKeyFromRedis } from '../../src/migration/import-one.js';
+import { importKeyFromRedis } from '../../src/migration/import-one.ts';
 
 function makeStorages() {
   const calls = {

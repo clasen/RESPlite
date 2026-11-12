@@ -7,7 +7,7 @@ import {
   encodeInteger,
   encodeBulk,
   encodeArray,
-} from '../../src/resp/encoder.js';
+} from '../../src/resp/encoder.ts';
 
 describe('RESP encoder', () => {
   it('encodes null as null bulk', () => {

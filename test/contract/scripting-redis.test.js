@@ -7,8 +7,8 @@ import { performance } from 'node:perf_hooks';
 import { LuaFactory } from 'wasmoon';
 import fengari from 'fengari';
 import { createClient, commandOptions } from 'redis';
-import { createRESPlite } from '../../src/embed.js';
-import { createWasmoonScripting, createFengariScripting } from '../../src/scripting/index.js';
+import { createRESPlite } from '../../src/embed.ts';
+import { createWasmoonScripting, createFengariScripting } from '../../src/scripting/index.ts';
 import { USERNAME_SCRIPT } from '../helpers/scripting.js';
 
 it('matches Redis scripting results and stored data, and measures EVAL/EVALSHA latency', { timeout: 20000 }, async (t) => {

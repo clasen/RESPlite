@@ -2,7 +2,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createTestServer } from '../helpers/server.js';
 import { sendCommand, argv } from '../helpers/client.js';
-import { tryParseValue } from '../../src/resp/parser.js';
+import { tryParseValue } from '../../src/resp/parser.ts';
 
 describe('KEYS integration', () => {
   let s;

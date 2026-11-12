@@ -1,12 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine } from '../../src/engine/engine.js';
-import { openDb } from '../../src/storage/sqlite/db.js';
-import { createCache } from '../../src/cache/cache.js';
+import { createEngine } from '../../src/engine/engine.ts';
+import { openDb } from '../../src/storage/sqlite/db.ts';
+import { createCache } from '../../src/cache/cache.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
-import { handleSet } from '../../src/commands/set.js';
-import { handleSetex } from '../../src/commands/setex.js';
-import { encode } from '../../src/resp/encoder.js';
+import { handleSet } from '../../src/commands/set.ts';
+import { handleSetex } from '../../src/commands/setex.ts';
+import { encode } from '../../src/resp/encoder.ts';
 
 describe('Engine strings', () => {
   const dbPath = tmpDbPath();

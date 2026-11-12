@@ -6,9 +6,9 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runMigrateSearch, mapFields, buildDocFields, getDocScore } from '../../src/migration/migrate-search.js';
-import { openDb } from '../../src/storage/sqlite/db.js';
-import { getIndexMeta, getIndexCounts, search, suggestionGet } from '../../src/storage/sqlite/search.js';
+import { runMigrateSearch, mapFields, buildDocFields, getDocScore } from '../../src/migration/migrate-search.ts';
+import { openDb } from '../../src/storage/sqlite/db.ts';
+import { getIndexMeta, getIndexCounts, search, suggestionGet } from '../../src/storage/sqlite/search.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 // ── Fake Redis client builder ─────────────────────────────────────────────────

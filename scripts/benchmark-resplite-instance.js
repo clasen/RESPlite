@@ -5,7 +5,7 @@
  * variables to the public CLI.
  */
 
-import { startServer } from '../src/index.js';
+import { startServer } from '../src/index.ts';
 
 const rawConfig = process.env.RESPLITE_BENCH_CONFIG;
 if (!rawConfig) throw new Error('RESPLITE_BENCH_CONFIG is required');

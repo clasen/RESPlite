@@ -1,0 +1,18 @@
+/**
+ * SETEX key seconds value - set key to value with expiration in seconds (atomic).
+ * Delegates to SET key value EX seconds to avoid duplicating logic.
+ */
+
+import * as set from './set.ts';
+import type { CommandReply, Engine } from '../types.ts';
+
+export function handleSetex(engine: Engine, args: Buffer[]): CommandReply {
+  if (!args || args.length !== 3) {
+    return { error: 'ERR wrong number of arguments for \'setex\' command' };
+  }
+  const key = args[0];
+  const value = args[2];
+  const result = set.handleSet(engine, [key, value, Buffer.from('EX'), args[1]]);
+  if (result && typeof result === 'object' && 'error' in result) result.error = result.error.replace("'set'", "'setex'");
+  return result;
+}

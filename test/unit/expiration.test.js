@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine } from '../../src/engine/engine.js';
-import { createExpirationSweeper } from '../../src/engine/expiration.js';
-import { openDb } from '../../src/storage/sqlite/db.js';
+import { createEngine } from '../../src/engine/engine.ts';
+import { createExpirationSweeper } from '../../src/engine/expiration.ts';
+import { openDb } from '../../src/storage/sqlite/db.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 import { fixedClock } from '../helpers/clock.js';
 

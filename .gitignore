@@ -138,3 +138,6 @@ demo/jailbreak.js
 /test/tmp
 /tmp
 /docs
+
+# TypeScript build output
+dist/

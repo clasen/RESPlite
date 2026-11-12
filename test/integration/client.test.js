@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { createTestServer } from '../helpers/server.js';
 import { sendCommand, argv } from '../helpers/client.js';
-import { encode } from '../../src/resp/encoder.js';
-import { tryParseValue } from '../../src/resp/parser.js';
+import { encode } from '../../src/resp/encoder.ts';
+import { tryParseValue } from '../../src/resp/parser.ts';
 
 function sendTwoCommands(port, argv1, argv2) {
   return new Promise((resolve, reject) => {

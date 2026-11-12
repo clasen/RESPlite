@@ -2,8 +2,8 @@ import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
-import { openDb } from '../../src/storage/sqlite/db.js';
-import { createEngine } from '../../src/engine/engine.js';
+import { openDb } from '../../src/storage/sqlite/db.ts';
+import { createEngine } from '../../src/engine/engine.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 it('serializes SET NX and XX GET across independent SQLite connections', { timeout: 20000 }, async () => {
@@ -41,9 +41,9 @@ it('serializes SET NX and XX GET across independent SQLite connections', { timeo
         })();
       `, { eval: true, workerData: {
         id, rounds, dbPath,
-        dbModule: new URL('../../src/storage/sqlite/db.js', import.meta.url).href,
-        engineModule: new URL('../../src/engine/engine.js', import.meta.url).href,
-        cacheModule: new URL('../../src/cache/cache.js', import.meta.url).href,
+        dbModule: new URL('../../src/storage/sqlite/db.ts', import.meta.url).href,
+        engineModule: new URL('../../src/engine/engine.ts', import.meta.url).href,
+        cacheModule: new URL('../../src/cache/cache.ts', import.meta.url).href,
       } });
       workers.push(worker);
       ready.push(once(worker, 'message'));

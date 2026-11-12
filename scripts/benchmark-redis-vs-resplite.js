@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getPragmaTemplateNames } from '../src/storage/sqlite/pragmas.js';
+import { getPragmaTemplateNames } from '../src/storage/sqlite/pragmas.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.join(__dirname, '..');

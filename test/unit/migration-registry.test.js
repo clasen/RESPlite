@@ -4,7 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb } from '../../src/storage/sqlite/db.js';
+import { openDb } from '../../src/storage/sqlite/db.ts';
 import {
   createRun,
   getRun,
@@ -16,7 +16,7 @@ import {
   getDirtyCounts,
   logError,
   RUN_STATUS,
-} from '../../src/migration/registry.js';
+} from '../../src/migration/registry.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 describe('migration registry', () => {

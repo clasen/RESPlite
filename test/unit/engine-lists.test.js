@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createEngine } from '../../src/engine/engine.js';
-import { openDb } from '../../src/storage/sqlite/db.js';
-import { createCache } from '../../src/cache/cache.js';
+import { createEngine } from '../../src/engine/engine.ts';
+import { openDb } from '../../src/storage/sqlite/db.ts';
+import { createCache } from '../../src/cache/cache.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 describe('Engine lists', () => {

@@ -1,0 +1,18 @@
+/**
+ * SREM key member [member ...]
+ */
+
+import type { CommandReply, Engine } from '../types.ts';
+
+export function handleSrem(engine: Engine, args: Buffer[]): CommandReply {
+  if (!args || args.length < 2) {
+    return { error: 'ERR wrong number of arguments for \'SREM\' command' };
+  }
+  try {
+    const n = engine.srem(args[0], args.slice(1));
+    return n;
+  } catch (e) {
+    const msg = e instanceof Error && e.message ? e.message : String(e);
+    return { error: msg.startsWith('ERR ') ? msg : msg.startsWith('WRONGTYPE') ? msg : 'ERR ' + msg };
+  }
+}

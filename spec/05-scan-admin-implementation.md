@@ -194,7 +194,7 @@ Recommended initial stack:
 
 - Node.js
 - JavaScript ESM
-- `better-sqlite3`
+- `node:sqlite`
 - built-in `node:test`
 - `assert/strict`
 - `redis` npm package for contract tests

@@ -37,6 +37,7 @@ Suggested internal cache entry structure:
 ### 12.4 Invalidation strategy
 
 Writes should update or invalidate cache entries immediately after a successful SQLite transaction.
+When a pipelined command batch (spec 03, section 16.5) rolls back, the whole cache is cleared because entries written by its commands may no longer match SQLite.
 Version values stored in `redis_keys` should be used to prevent stale cache reads.
 
 ### 12.5 Policy

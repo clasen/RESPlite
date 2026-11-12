@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { matchPattern } from '../../src/util/patterns.js';
+import { matchPattern } from '../../src/util/patterns.ts';
 
 describe('Redis glob matching', () => {
   it('supports wildcards, ranges, negated classes and escaping', () => {

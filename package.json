@@ -1,26 +1,50 @@
 {
   "name": "resplite",
-  "version": "1.8.6",
+  "version": "2.0.0",
   "description": "A RESP2 server with practical Redis compatibility, backed by SQLite",
   "type": "module",
-  "main": "src/index.js",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.js",
-    "./embed": "./src/embed.js",
-    "./scripting": "./src/scripting/index.js",
-    "./migration": "./src/migration/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./embed": {
+      "types": "./dist/embed.d.ts",
+      "default": "./dist/embed.js"
+    },
+    "./scripting": {
+      "types": "./dist/scripting/index.d.ts",
+      "default": "./dist/scripting/index.js"
+    },
+    "./migration": {
+      "types": "./dist/migration/index.d.ts",
+      "default": "./dist/migration/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
   },
   "scripts": {
-    "start": "node src/index.js",
-    "test": "node --test",
+    "start": "node src/index.ts",
+    "test": "npm run build && node --test",
     "test:unit": "node --test 'test/unit/*.test.js'",
-    "test:integration": "node --test 'test/integration/*.test.js'",
+    "test:integration": "npm run build && node --test 'test/integration/*.test.js'",
     "test:contract": "node --test 'test/contract/*.test.js'",
     "test:stress": "node --test 'test/stress/*.test.js'",
     "benchmark": "node scripts/benchmark-redis-vs-resplite.js",
     "benchmark:hash": "node scripts/benchmark-redis-vs-resplite.js --template default --new-hash-only",
     "benchmark:pubsub": "node scripts/benchmark-pubsub.js",
-    "test:all": "node --test 'test/**/*.test.js'"
+    "test:all": "npm run build && node --test 'test/**/*.test.js'",
+    "test:bun": "npm run build && bun test test",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepack": "npm run build"
   },
   "keywords": [
     "redis",
@@ -41,12 +65,19 @@
     "garnet",
     "clasen"
   ],
-  "dependencies": {
-    "better-sqlite3": "^11.6.0"
+  "peerDependencies": {
+    "redis": "^4.7.0"
+  },
+  "peerDependenciesMeta": {
+    "redis": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@types/node": "22.20.5",
     "fengari": "0.1.5",
     "redis": "^4.7.0",
+    "typescript": "7.0.2",
     "wasmoon": "1.16.0"
   }
 }

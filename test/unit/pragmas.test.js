@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb } from '../../src/storage/sqlite/db.js';
-import { getPragmaTemplateNames, getPragmasForTemplate } from '../../src/storage/sqlite/pragmas.js';
+import { openDb } from '../../src/storage/sqlite/db.ts';
+import { getPragmaTemplateNames, getPragmasForTemplate } from '../../src/storage/sqlite/pragmas.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 describe('Pragma templates', () => {

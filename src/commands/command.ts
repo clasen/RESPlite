@@ -1,0 +1,165 @@
+/**
+ * COMMAND - introspection: list commands, count, or info for specific commands.
+ * Redis-style command docs; string writes include Redis 7 tips, key specs and subcommands.
+ */
+
+import type { CommandContext, CommandReply, Engine, RespValue } from '../types.ts';
+
+/** Commands that modify data (write). */
+const WRITE_COMMANDS = new Set([
+  'SET', 'SETEX', 'SETNX', 'MSET', 'MSETNX', 'DEL', 'UNLINK', 'FLUSHDB', 'FLUSHALL', 'EXPIRE', 'PEXPIRE', 'PERSIST', 'INCR', 'DECR', 'INCRBY', 'DECRBY',
+  'HSET', 'HSETNX', 'HMSET', 'HDEL', 'HINCRBY', 'HINCRBYFLOAT',
+  'HEXPIRE', 'HPEXPIRE', 'HEXPIREAT', 'HPEXPIREAT', 'HPERSIST',
+  'SADD', 'SREM', 'LPUSH', 'RPUSH', 'LPOP', 'RPOP', 'LREM', 'LMPOP', 'ZADD', 'ZREM', 'ZMPOP',
+  'FT.CREATE', 'FT.ADD', 'FT.DEL', 'FT.SUGADD', 'FT.SUGDEL', 'CLIENT',
+]);
+
+const PUBSUB_COMMANDS = new Set([
+  'PUBLISH', 'SUBSCRIBE', 'UNSUBSCRIBE', 'PSUBSCRIBE', 'PUNSUBSCRIBE', 'PUBSUB',
+]);
+
+const HASH_ARITIES = new Map([
+  ['HSET', -4],
+  ['HSETNX', 4],
+  ['HMSET', -4],
+  ['HGET', 3],
+  ['HMGET', -3],
+  ['HGETALL', 2],
+  ['HKEYS', 2],
+  ['HVALS', 2],
+  ['HDEL', -3],
+  ['HLEN', 2],
+  ['HEXISTS', 3],
+  ['HINCRBY', 4],
+  ['HINCRBYFLOAT', 4],
+  ['HSTRLEN', 3],
+  ['HSCAN', -3],
+  ['HRANDFIELD', -2],
+  ['HEXPIRE', -6],
+  ['HPEXPIRE', -6],
+  ['HEXPIREAT', -6],
+  ['HPEXPIREAT', -6],
+  ['HTTL', -5],
+  ['HPTTL', -5],
+  ['HEXPIRETIME', -5],
+  ['HPEXPIRETIME', -5],
+  ['HPERSIST', -5],
+]);
+
+const STRING_WRITES = new Map([
+  ['SET', { arity: -3, access: ['RW', 'access', 'update', 'variable_flags'] }],
+  ['SETNX', { arity: 3, access: ['OW', 'insert'], fast: true }],
+  ['SETEX', { arity: 4, access: ['OW', 'update'] }],
+  ['MSET', { arity: -3, access: ['OW', 'update'], multiple: true }],
+  ['MSETNX', { arity: -3, access: ['OW', 'insert'], multiple: true }],
+]);
+
+/**
+ * Build Redis-style command doc: [name, arity, flags, firstKey, lastKey, step, acl_categories].
+ */
+function docFor(name: string, canonicalName: string = name): RespValue[] {
+  const lower = name.toLowerCase();
+  const stringWrite = STRING_WRITES.get(canonicalName);
+  if (stringWrite) {
+    const { arity, access, fast, multiple } = stringWrite;
+    const lastKey = multiple ? -1 : 1;
+    const step = multiple ? 2 : 1;
+    const keySpec = [
+      ...(canonicalName === 'SET' ? ['notes', 'RW and ACCESS due to the optional `GET` argument'] : []),
+      'flags', access.map((simple) => ({ simple })),
+      'begin_search', ['type', 'index', 'spec', ['index', 1]],
+      'find_keys', ['type', 'range', 'spec', ['lastkey', multiple ? -1 : 0, 'keystep', step, 'limit', 0]],
+    ];
+    return [lower, arity, ['write', 'denyoom', ...(fast ? ['fast'] : [])].map((simple) => ({ simple })), 1, lastKey, step,
+      ['@write', '@string', fast ? '@fast' : '@slow'].map((simple) => ({ simple })),
+      canonicalName === 'MSET' ? ['request_policy:multi_shard', 'response_policy:all_succeeded'] : [],
+      [keySpec], []];
+  }
+  if (canonicalName === 'EVAL' || canonicalName === 'EVALSHA') {
+    return [lower, -3, ['noscript', 'movablekeys'], 0, 0, 0, ['@scripting', '@slow']];
+  }
+  if (canonicalName === 'INFO') {
+    return [lower, -1, ['loading', 'stale'], 0, 0, 0, ['@slow', '@dangerous']];
+  }
+  if (canonicalName === 'MEMORY') {
+    return [lower, -2, [], 0, 0, 0, ['@slow']];
+  }
+  if (canonicalName === 'SCRIPT') {
+    return [lower, -2, ['noscript'], 0, 0, 0, ['@scripting', '@slow']];
+  }
+  const flags = PUBSUB_COMMANDS.has(canonicalName)
+    ? ['pubsub']
+    : WRITE_COMMANDS.has(canonicalName) ? ['write', 'fast'] : ['readonly', 'fast'];
+  let arity = 2;
+  let firstKey = 1;
+  let lastKey = 1;
+  let step = 1;
+  if (PUBSUB_COMMANDS.has(canonicalName)) {
+    firstKey = 0;
+    lastKey = 0;
+    step = 0;
+    if (canonicalName === 'PUBLISH') arity = 3;
+    else if (canonicalName === 'SUBSCRIBE' || canonicalName === 'PSUBSCRIBE') arity = -2;
+    else if (canonicalName === 'PUBSUB') arity = -2;
+    else arity = -1;
+  } else if (['MGET', 'MSET', 'DEL', 'UNLINK', 'EXISTS', 'KEYS', 'SCAN', 'PING', 'ECHO', 'QUIT', 'TYPE', 'OBJECT', 'SQLITE.INFO', 'CACHE.INFO', 'MEMORY.INFO', 'COMMAND', 'MONITOR', 'CLIENT', 'DBSIZE', 'FLUSHDB', 'FLUSHALL'].includes(canonicalName)) {
+    if (['PING', 'ECHO', 'QUIT', 'COMMAND', 'MONITOR', 'DBSIZE', 'FLUSHDB', 'FLUSHALL'].includes(canonicalName)) {
+      firstKey = 0;
+      lastKey = 0;
+      step = 0;
+      if (canonicalName === 'DBSIZE') arity = 1;
+      else if (canonicalName === 'FLUSHDB' || canonicalName === 'FLUSHALL') arity = -1;
+      else arity = canonicalName === 'COMMAND' || canonicalName === 'PING' ? -1 : (canonicalName === 'ECHO' ? 2 : 1);
+    } else if (['MGET', 'EXISTS', 'KEYS', 'SCAN'].includes(canonicalName)) {
+      arity = -2;
+      lastKey = -1;
+    } else if (canonicalName === 'MSET' || canonicalName === 'MSETNX') {
+      arity = -3;
+      lastKey = -1;
+      step = 2;
+    } else if (['DEL', 'UNLINK'].includes(canonicalName)) {
+      arity = -2;
+      lastKey = -1;
+    }
+  } else if (canonicalName.startsWith('FT.') || canonicalName.startsWith('SQLITE.') || canonicalName.startsWith('CACHE.') || canonicalName.startsWith('MEMORY.')) {
+    firstKey = 0;
+    lastKey = 0;
+    step = 0;
+    arity = -2;
+  } else if (['BLPOP', 'BRPOP'].includes(canonicalName)) {
+    arity = -3;
+    lastKey = -1;
+    step = 1;
+  } else if (HASH_ARITIES.has(canonicalName)) {
+    arity = HASH_ARITIES.get(canonicalName)!;
+  }
+  return [lower, arity, flags, firstKey, lastKey, step, []];
+}
+
+/**
+ * args: subcommand and optional names for INFO.
+ */
+export function handleCommand(engine: Engine, args: Buffer[], context?: CommandContext): CommandReply {
+  const allNames = context?.getCommandNames ? context.getCommandNames() : [];
+  const resolveCanonical = context?.resolveCommandForIntrospection
+    ? (name: string) => context.resolveCommandForIntrospection!(name)
+    : (name: string) => name;
+  const sub = (args && args.length > 0 && Buffer.isBuffer(args[0])) ? args[0].toString('utf8').toUpperCase() : '';
+
+  if (!sub || sub === '') {
+    const reply = allNames.map((n) => docFor(n, resolveCanonical(n)));
+    return reply;
+  }
+  if (sub === 'COUNT') {
+    return allNames.length;
+  }
+  if (sub === 'INFO') {
+    const names = args.length === 1 ? allNames
+      : args.slice(1).map((b) => (Buffer.isBuffer(b) ? b.toString('utf8') : String(b)).toUpperCase());
+    const set = new Set(allNames);
+    const reply = names.map((n) => set.has(n) ? docFor(n, resolveCanonical(n)) : null);
+    return reply;
+  }
+
+  return { error: 'ERR unknown subcommand or wrong number of arguments for \'COMMAND\'. Try COMMAND HELP.' };
+}

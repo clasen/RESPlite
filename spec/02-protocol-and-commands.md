@@ -106,9 +106,24 @@ Supported as project-specific commands:
 
 - `SQLITE.INFO`
 - `CACHE.INFO`
+- `MEMORY.INFO`
 
 These are not Redis-standard commands.
 They exist for observability and operational insight.
+
+### 6.8.1 INFO and MEMORY
+
+Supported:
+
+- `INFO [section ...]`
+- `MEMORY USAGE key [SAMPLES count]`
+- `MEMORY STATS`
+- `MEMORY PURGE`
+- `MEMORY HELP`
+
+`INFO` replies with a bulk string in the Redis `# Section` / `field:value` format. Sections, in order: `server`, `clients`, `memory`, `persistence`, `stats`, `sqlite`, `cache`, `keyspace`. No argument, `default`, `all` or `everything` select every section; names are case-insensitive and unknown ones are ignored. `persistence` always reports `loading:0` because SQLite needs no load phase. `keyspace` lists `db0:keys=N,expires=M,avg_ttl=MS` and is empty when the database has no keys.
+
+`MEMORY USAGE` returns the stored bytes of the key name plus its payload (string value; hash fields and values; set members; list items; sorted-set members plus 8 bytes per score), or nil for a missing key. `MEMORY STATS` returns process memory from the Node.js runtime, cache bytes, key count and SQLite database size. `MEMORY PURGE` is a no-op. `MEMORY DOCTOR` and `MEMORY MALLOC-STATS` are not supported.
 
 ### 6.9 Pub/Sub commands
 

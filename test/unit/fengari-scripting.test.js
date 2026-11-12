@@ -2,9 +2,9 @@ import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fengari from 'fengari';
-import { createFengariScripting } from '../../src/scripting/index.js';
-import { runFengari } from '../../src/scripting/fengari-runtime.js';
-import { FENGARI_DEFAULTS } from '../../src/scripting/config.js';
+import { createFengariScripting } from '../../src/scripting/index.ts';
+import { runFengari } from '../../src/scripting/fengari-runtime.ts';
+import { FENGARI_DEFAULTS } from '../../src/scripting/config.ts';
 
 const execute = (source, args = [], call = () => null, module = fengari) =>
   runFengari(module, Buffer.from(source), [], args, FENGARI_DEFAULTS, call);
@@ -67,8 +67,8 @@ it('interrupts yieldable protected loops and recovers under an external watchdog
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     import fengari from 'fengari';
-    import {runFengari} from './src/scripting/fengari-runtime.js';
-    import {FENGARI_DEFAULTS} from './src/scripting/config.js';
+    import {runFengari} from './src/scripting/fengari-runtime.ts';
+    import {FENGARI_DEFAULTS} from './src/scripting/config.ts';
     const run = (source) => runFengari(fengari,Buffer.from(source),[],[],{...FENGARI_DEFAULTS,timeoutMs:50},()=>null);
     for (const source of ['while true do end',
       'while true do pcall(function() while true do end end) end',
@@ -87,8 +87,8 @@ it('refuses commands after the deadline even inside a native callback', () => {
     import assert from 'node:assert/strict';
     import {performance} from 'node:perf_hooks';
     import fengari from 'fengari';
-    import {runFengari} from './src/scripting/fengari-runtime.js';
-    import {FENGARI_DEFAULTS} from './src/scripting/config.js';
+    import {runFengari} from './src/scripting/fengari-runtime.ts';
+    import {FENGARI_DEFAULTS} from './src/scripting/config.ts';
     const commands = [];
     const config = {...FENGARI_DEFAULTS, timeoutMs:100};
     const source = Buffer.from(\`
@@ -116,8 +116,8 @@ it('allows GC to reclaim states after repeated success, errors and timeouts', (t
     import assert from 'node:assert/strict';
     import {setImmediate} from 'node:timers/promises';
     import fengari from 'fengari';
-    import {runFengari} from './src/scripting/fengari-runtime.js';
-    import {FENGARI_DEFAULTS} from './src/scripting/config.js';
+    import {runFengari} from './src/scripting/fengari-runtime.ts';
+    import {FENGARI_DEFAULTS} from './src/scripting/config.ts';
     const states = [];
     let closes = 0;
     const tracked = {

@@ -10,7 +10,7 @@ import {
   parseFtSugadd,
   parseFtSugget,
   parseFtSugdel,
-} from '../../src/commands/ft/parser.js';
+} from '../../src/commands/ft/parser.ts';
 
 function buf(s) {
   return Buffer.from(s, 'utf8');

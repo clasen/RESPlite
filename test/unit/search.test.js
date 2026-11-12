@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb } from '../../src/storage/sqlite/db.js';
+import { openDb } from '../../src/storage/sqlite/db.ts';
 import {
   createIndex,
   getIndexMeta,
@@ -13,7 +13,7 @@ import {
   suggestionGet,
   suggestionDel,
   validateIndexName,
-} from '../../src/storage/sqlite/search.js';
+} from '../../src/storage/sqlite/search.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 describe('Search layer', () => {

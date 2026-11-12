@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { RESPReader } from '../../src/resp/parser.js';
-import { encode } from '../../src/resp/encoder.js';
+import { RESPReader } from '../../src/resp/parser.ts';
+import { encode } from '../../src/resp/encoder.ts';
 
 describe('RESP parser', () => {
   it('parses simple string', () => {

@@ -4,11 +4,12 @@
  */
 
 import net from 'node:net';
-import { handleConnection } from '../../src/server/connection.js';
-import { createEngine } from '../../src/engine/engine.js';
-import { openDb } from '../../src/storage/sqlite/db.js';
-import { compileCommandPolicy } from '../../src/commands/registry.js';
-import { createPubSubBroker } from '../../src/pubsub/broker.js';
+import { handleConnection } from '../../src/server/connection.ts';
+import { createEngine } from '../../src/engine/engine.ts';
+import { openDb } from '../../src/storage/sqlite/db.ts';
+import { compileCommandPolicy } from '../../src/commands/registry.ts';
+import { createPubSubBroker } from '../../src/pubsub/broker.ts';
+import { createServerStats } from '../../src/server/stats.ts';
 import { tmpDbPath } from './tmp.js';
 
 export function createTestServer(options = {}) {
@@ -18,11 +19,12 @@ export function createTestServer(options = {}) {
   const hooks = options.hooks || {};
   const commandPolicy = compileCommandPolicy(options.commandPolicy ?? null);
   const pubSub = createPubSubBroker();
+  const stats = createServerStats();
   const connections = new Set();
   const server = net.createServer((socket) => {
     connections.add(socket);
     socket.once('close', () => connections.delete(socket));
-    handleConnection(socket, engine, hooks, commandPolicy, { pubSub });
+    handleConnection(socket, engine, hooks, commandPolicy, { pubSub, stats });
   });
   return new Promise((resolve, reject) => {
     server.listen(0, '127.0.0.1', () => {

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { matchPubSubPattern } from '../../src/pubsub/match.js';
+import { matchPubSubPattern } from '../../src/pubsub/match.ts';
 
 function matches(pattern, value) {
   return matchPubSubPattern(Buffer.from(pattern), Buffer.from(value));

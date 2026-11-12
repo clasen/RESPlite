@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { LuaFactory } from 'wasmoon';
 import fengari from 'fengari';
-import { createWasmoonScripting, createFengariScripting } from '../../src/scripting/index.js';
-import { createEngine } from '../../src/engine/engine.js';
-import { openDb } from '../../src/storage/sqlite/db.js';
-import { dispatch } from '../../src/commands/registry.js';
-import { encode } from '../../src/resp/encoder.js';
-import { tryParseValue } from '../../src/resp/parser.js';
-import { runLua } from '../../src/scripting/runtime.js';
-import { DEFAULTS } from '../../src/scripting/config.js';
+import { createWasmoonScripting, createFengariScripting } from '../../src/scripting/index.ts';
+import { createEngine } from '../../src/engine/engine.ts';
+import { openDb } from '../../src/storage/sqlite/db.ts';
+import { dispatch } from '../../src/commands/registry.ts';
+import { encode } from '../../src/resp/encoder.ts';
+import { tryParseValue } from '../../src/resp/parser.ts';
+import { runLua } from '../../src/scripting/runtime.ts';
+import { DEFAULTS } from '../../src/scripting/config.ts';
 
 let lua;
 before(async () => { lua = await new LuaFactory().getLuaModule(); });
@@ -280,8 +280,8 @@ it('cuts protected infinite loops and memory exhaustion in an isolated process, 
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     import {LuaFactory} from 'wasmoon';
-    import {runLua} from './src/scripting/runtime.js';
-    import {DEFAULTS} from './src/scripting/config.js';
+    import {runLua} from './src/scripting/runtime.ts';
+    import {DEFAULTS} from './src/scripting/config.ts';
     const lua = await new LuaFactory().getLuaModule();
     const config = {...DEFAULTS, timeoutMs:30, maxMemoryBytes:65536};
     for (const source of [

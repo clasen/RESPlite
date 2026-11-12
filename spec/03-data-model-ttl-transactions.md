@@ -161,3 +161,11 @@ Set modifications must update:
 Lua scripts execute synchronously without interleaving requests from other clients of the same server. Key and hash-field expiration use a fixed script-start clock. List pushes defer blocked-client wakeups until the script finishes, on success or error, so waiters observe the final state.
 
 Individual commands retain their existing SQLite transaction boundaries. A script is not wrapped in a rollback transaction: writes completed before a runtime error, memory failure or automatic timeout remain committed and visible. This guarantee does not cover independent processes opening the same database, nor whole-script crash durability. See spec 02 for the scripting surface and limits.
+
+### 16.5 Pipelined command batches
+
+When one read from a client socket yields several complete commands, the server runs them inside one SQLite write transaction (`BEGIN IMMEDIATE`) and sends all their replies after it commits. Each command keeps its own transaction as a savepoint, so a command error rolls back only that command and the rest of the batch continues; replies keep their order.
+
+A batch is not used when the connection is in MONITOR or Pub/Sub mode, or when the batch contains `QUIT`, `MONITOR`, a blocking command (`BLPOP`, `BRPOP`) or a subscription command. Those commands run one by one, each with its own transaction boundaries.
+
+If the batch transaction itself fails, nothing it wrote is kept: every command in the batch receives an error and the hot cache is cleared. A batch holds the database write lock until it commits, including batches that only read.

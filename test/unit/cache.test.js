@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createLRU } from '../../src/cache/lru.js';
-import { createCache } from '../../src/cache/cache.js';
+import { createLRU } from '../../src/cache/lru.ts';
+import { createCache } from '../../src/cache/cache.ts';
 
 describe('Cache', () => {
   it('LRU get/set and eviction', () => {
@@ -128,6 +128,28 @@ describe('Cache', () => {
     lru.set('hot', { value: Buffer.from('12345') });
     assert.equal(lru.stats.entries, 0);
     assert.equal(lru.stats.bytes, 0);
+  });
+
+  it('keeps recency and byte accounting consistent across heavy churn', () => {
+    const lru = createLRU({ maxEntries: 3, maxBytes: 1000 });
+    lru.set('hot', { value: Buffer.from('h') });
+    for (let i = 0; i < 1000; i++) {
+      lru.set(`k${i}`, { value: Buffer.from('xy') });
+      assert.ok(lru.get('hot'));
+      if (i % 7 === 0) lru.del(`k${i}`);
+    }
+    lru.set('k999', { value: Buffer.from('xyz') });
+
+    assert.equal(lru.get('hot').value.toString(), 'h');
+    assert.equal(lru.get('k998').value.toString(), 'xy');
+    assert.equal(lru.get('k999').value.toString(), 'xyz');
+    assert.deepEqual({ entries: lru.stats.entries, bytes: lru.stats.bytes }, { entries: 3, bytes: 6 });
+    lru.del('hot');
+    lru.del('k998');
+    lru.del('k999');
+    assert.deepEqual({ entries: lru.stats.entries, bytes: lru.stats.bytes }, { entries: 0, bytes: 0 });
+    lru.set('again', { value: Buffer.from('a') });
+    assert.equal(lru.get('again').value.toString(), 'a');
   });
 
   it('keeps disabled cache statistics at zero', () => {
