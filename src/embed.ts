@@ -24,6 +24,7 @@ import { createServerStats } from './server/stats.ts';
 import type { AddressInfo, Server, Socket } from 'node:net';
 import type Database from './storage/sqlite/driver.ts';
 import type { CacheOptions } from './cache/cache.ts';
+import type { SearchOptions } from './storage/sqlite/search.ts';
 import type { CommandPolicy } from './commands/registry.ts';
 import type { ScriptingPlugin } from './scripting/plugin.ts';
 import type { CommandEvent, ConnectionHooks } from './types.ts';
@@ -109,6 +110,8 @@ export interface CreateRESPliteOptions {
   pragma?: Record<string, string | number>;
   /** Hot data cache configuration, or false to disable it. */
   cache?: false | CacheOptions;
+  /** FT.SEARCH guards: minPrefix, maxResults, timeoutMs. */
+  search?: SearchOptions;
   /** Optional event hooks for observability (onUnknownCommand, onCommandError, onSocketError). */
   hooks?: RESPliteHooks;
   /** If true, register SIGTERM/SIGINT to call close(). Set false if you handle shutdown yourself to avoid double handlers. Default true. */
@@ -148,6 +151,7 @@ export async function createRESPlite({
   pragmaTemplate = 'default',
   pragma,
   cache: cacheOptions,
+  search,
   hooks = {},
   gracefulShutdown = true,
   commandPolicy = null,
@@ -164,7 +168,7 @@ export async function createRESPlite({
     const cache = cacheOptions === false
       ? createCache({ enabled: false })
       : createCache({ enabled: true, ...(cacheOptions ?? {}) });
-    const engine = createEngine({ db, cache });
+    const engine = createEngine({ db, cache, search });
     const pubSub = createPubSubBroker();
     const stats = createServerStats();
     server = net.createServer((socket) => {

@@ -13,6 +13,8 @@ import {
   suggestionGet,
   suggestionDel,
   validateIndexName,
+  resolveSearchLimits,
+  SearchTimeoutError,
 } from '../../src/storage/sqlite/search.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
@@ -233,5 +235,76 @@ describe('Search layer', () => {
 
   it('getIndexMeta throws for unknown index', () => {
     assert.throws(() => getIndexMeta(db, 'nonexistent'), /Unknown index name/);
+  });
+});
+
+describe('Search guards', () => {
+  const db = openDb(tmpDbPath());
+  createIndex(db, 'guards', [{ name: 'payload', type: 'TEXT' }]);
+  db.transaction(() => {
+    for (let i = 0; i < 300; i++) {
+      addDocument(db, 'guards', `d${i}`, 1, false, { payload: `abc${i} common${i % 3 === 0 ? ' rare' : ''}` });
+    }
+  })();
+
+  it('resolveSearchLimits applies defaults and rejects invalid values', () => {
+    assert.deepEqual({ ...resolveSearchLimits() }, { minPrefix: 3, maxResults: 10000, timeoutMs: 500 });
+    assert.deepEqual({ ...resolveSearchLimits({ minPrefix: 4, timeoutMs: 0 }) }, { minPrefix: 4, maxResults: 10000, timeoutMs: 0 });
+    assert.throws(() => resolveSearchLimits({ minPrefix: 0 }), /minPrefix/);
+    assert.throws(() => resolveSearchLimits({ maxResults: 1.5 }), /maxResults/);
+    assert.throws(() => resolveSearchLimits({ timeoutMs: -1 }), /timeoutMs/);
+  });
+
+  it('rejects prefix terms shorter than minPrefix', () => {
+    assert.throws(() => search(db, 'guards', 'a*'), /shorter than the minimum of 3 characters/);
+    assert.throws(() => search(db, 'guards', 'ab*'), /minimum of 3/);
+    assert.throws(() => search(db, 'guards', 'common ab*'), /minimum of 3/);
+    assert.equal(search(db, 'guards', 'abc*', { count: 0 }).total, 300);
+    assert.equal(search(db, 'guards', 'a*', { count: 0, limits: resolveSearchLimits({ minPrefix: 1 }) }).total, 300);
+    assert.throws(
+      () => search(db, 'guards', 'abc*', { limits: resolveSearchLimits({ minPrefix: 4 }) }),
+      /minimum of 4/
+    );
+  });
+
+  it('counts prefix length in characters, not bytes', () => {
+    assert.throws(() => search(db, 'guards', 'éé*'), /minimum of 3/);
+    assert.equal(search(db, 'guards', 'ééé*', { count: 0 }).total, 0);
+  });
+
+  it('stops counting at maxResults and ranks only what it read', () => {
+    const limits = resolveSearchLimits({ maxResults: 50 });
+    const capped = search(db, 'guards', 'abc*', { noContent: true, count: 10, limits });
+    assert.equal(capped.total, 50);
+    assert.equal(capped.docIds.length, 10);
+    const beyond = search(db, 'guards', 'abc*', { noContent: true, offset: 45, count: 10, limits });
+    assert.equal(beyond.docIds.length, 5);
+    assert.equal(search(db, 'guards', 'rare', { count: 0 }).total, 100);
+  });
+
+  it('still ranks by bm25 when under the cap', () => {
+    addDocument(db, 'guards', 'best', 1, false, { payload: 'rare rare rare' });
+    const r = search(db, 'guards', 'rare', { noContent: true, count: 1 });
+    assert.equal(r.total, 101);
+    assert.deepEqual(r.docIds, ['best']);
+    deleteDocument(db, 'guards', 'best');
+  });
+
+  it('aborts with a timeout error once the time budget is spent', () => {
+    let t = 0;
+    const clock = () => (t += 1);
+    assert.throws(
+      () => search(db, 'guards', 'abc*', { count: 0, timeoutMs: 3, clock }),
+      (err) => err instanceof SearchTimeoutError && err.message === 'ERR Timeout limit was reached'
+    );
+  });
+
+  it('uses the server default budget unless the query overrides it, and 0 disables it', () => {
+    let t = 0;
+    const clock = () => (t += 1000);
+    const limits = resolveSearchLimits({ timeoutMs: 1 });
+    assert.throws(() => search(db, 'guards', 'abc*', { count: 0, limits, clock }), SearchTimeoutError);
+    assert.equal(search(db, 'guards', 'abc*', { count: 0, limits, clock, timeoutMs: 0 }).total, 300);
+    assert.equal(search(db, 'guards', 'abc*', { count: 0, limits: resolveSearchLimits({ timeoutMs: 0 }), clock }).total, 300);
   });
 });

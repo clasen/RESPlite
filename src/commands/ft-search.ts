@@ -1,5 +1,5 @@
 /**
- * FT.SEARCH index query [NOCONTENT] [LIMIT offset count]
+ * FT.SEARCH index query [NOCONTENT] [LIMIT offset count] [TIMEOUT ms]
  */
 
 import { parseFtSearch } from './ft/parser.ts';
@@ -16,6 +16,8 @@ export function handleFtSearch(engine: Engine, args: Buffer[]): CommandReply {
       offset: parsed.offset,
       count: parsed.count,
       noContent: parsed.noContent,
+      limits: engine._searchLimits,
+      timeoutMs: parsed.timeoutMs,
     });
     const out: RespValue[] = [result.total];
     if (parsed.noContent) {

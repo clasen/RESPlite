@@ -78,6 +78,11 @@ export class Statement {
     return values === undefined ? undefined : this.#toRow(values);
   }
 
+  /** Rows one at a time; breaking out of the loop resets the statement. */
+  *iterate(...params: SQLInputValue[]): Generator<any, void, undefined> {
+    for (const values of this.#stmt.iterate(...params)) yield this.#toRow(values as unknown as unknown[]);
+  }
+
   all(...params: SQLInputValue[]): any[] {
     const rows = this.#stmt.all(...params) as unknown[];
     for (let i = 0; i < rows.length; i++) rows[i] = this.#toRow(rows[i] as unknown[]);
@@ -90,6 +95,8 @@ type AnyFunction = (...args: any[]) => any;
 export default class Database {
   #db: DatabaseSync;
   #savepointDepth = 0;
+  /** Undo callbacks per open transaction level: [outer transaction, savepoint 1, ...]. */
+  #rollbackFrames: (() => void)[][] = [];
   readonly name: string;
 
   /**
@@ -114,6 +121,20 @@ export default class Database {
   }
 
   /**
+   * Register undo for in-memory state that mirrors a write just made. It runs if the
+   * enclosing transaction or savepoint rolls back; outside a transaction the write is
+   * already committed and nothing is registered.
+   */
+  onRollback(undo: () => void): void {
+    const frame = this.#rollbackFrames.at(-1);
+    if (frame && this.#db.isTransaction) frame.push(undo);
+  }
+
+  #runUndo(frame: (() => void)[]): void {
+    for (let i = frame.length - 1; i >= 0; i--) frame[i]();
+  }
+
+  /**
    * Wrap fn so each call runs in a transaction; nested calls use savepoints.
    * The `.immediate` variant takes the write lock at BEGIN.
    */
@@ -134,15 +155,23 @@ export default class Database {
       } else {
         db.exec(begin);
       }
+      const frame: (() => void)[] = [];
+      this.#rollbackFrames.push(frame);
       try {
         const result = fn(...args);
         db.exec(nested ? `RELEASE ${savepoint}` : 'COMMIT');
+        this.#rollbackFrames.pop();
+        if (nested) this.#rollbackFrames.at(-1)!.push(...frame);
         return result;
       } catch (err) {
+        this.#rollbackFrames.pop();
+        // SQLite may already have rolled back the whole transaction (e.g. SQLITE_FULL);
+        // every level still undoes its own frame as the error propagates.
         if (db.isTransaction) {
           if (nested) db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`);
           else db.exec('ROLLBACK');
         }
+        this.#runUndo(frame);
         throw err;
       } finally {
         if (nested) this.#savepointDepth--;

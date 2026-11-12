@@ -31,7 +31,52 @@ export interface CountUpdateOptions {
   updatedAt?: number;
 }
 
+export interface KeyCounter {
+  /** Rows in redis_keys, including expired keys not yet removed. */
+  get(): number;
+  /** Record rows inserted (+) or deleted (-) by a statement that just ran on this connection. */
+  add(delta: number | bigint): void;
+}
+
+const keyCounters = new WeakMap<Database, KeyCounter>();
+
+/**
+ * In-memory row count of redis_keys for a connection, counted once when first requested.
+ * Every statement on this connection that inserts or deletes redis_keys rows reports
+ * its change count; rolled-back deltas are undone. Commits by other connections change
+ * PRAGMA data_version, which triggers one recount.
+ */
+export function getKeyCounter(db: Database): KeyCounter {
+  let counter = keyCounters.get(db);
+  if (counter) return counter;
+  const countRows = db.prepare('SELECT COUNT(*) FROM redis_keys').pluck();
+  const dataVersion = db.prepare('PRAGMA data_version').pluck();
+  let seenVersion = dataVersion.get();
+  let value: number = countRows.get();
+  counter = {
+    get() {
+      const version = dataVersion.get();
+      if (version !== seenVersion) {
+        seenVersion = version;
+        value = countRows.get();
+      }
+      return value;
+    },
+    add(delta) {
+      const n = Number(delta);
+      if (n === 0) return;
+      value += n;
+      db.onRollback(() => {
+        value -= n;
+      });
+    },
+  };
+  keyCounters.set(db, counter);
+  return counter;
+}
+
 export function createKeysStorage(db: Database) {
+  const counter = getKeyCounter(db);
   const getByKey = db.prepare(
     'SELECT key, type, CASE WHEN expires_at > 9007199254740991 THEN CAST(expires_at AS TEXT) ELSE expires_at END AS expiresAt, set_count AS setCount, hash_count AS hashCount, zset_count AS zsetCount, version, updated_at AS updatedAt FROM redis_keys WHERE key = ?'
   );
@@ -64,22 +109,26 @@ export function createKeysStorage(db: Database) {
   const deleteByKey = db.prepare('DELETE FROM redis_keys WHERE key = ?');
   const deleteAll = db.prepare('DELETE FROM redis_keys');
   const deleteExpiredStmt = db.prepare('DELETE FROM redis_keys WHERE expires_at IS NOT NULL AND expires_at <= ?');
-  const countAll = db.prepare('SELECT COUNT(*) AS n FROM redis_keys').pluck();
-  const countLive = db.prepare(
-    `SELECT COUNT(*) AS n
+  // Both corrections read only rows already expired but not yet removed by lazy or
+  // active expiry, through the expires_at indexes, so their cost tracks the sweeper backlog.
+  const countExpired = db.prepare(
+    'SELECT COUNT(*) FROM redis_keys WHERE expires_at IS NOT NULL AND expires_at <= ?'
+  ).pluck();
+  // Unary + keeps the planner from driving this through the type or expires_at index of
+  // redis_keys, which would visit every hash instead of only those with expired fields.
+  const countFieldExpiredHashes = db.prepare(
+    `SELECT COUNT(*)
        FROM redis_keys k
-      WHERE (k.expires_at IS NULL OR k.expires_at > ?)
-        AND (
-          k.type != ?
-          OR EXISTS (
-            SELECT 1
-              FROM redis_hashes h
-             WHERE h.key = k.key
-               AND NOT EXISTS (
-                 SELECT 1 FROM redis_hash_field_ttl t
-                  WHERE t.key = h.key AND t.field = h.field AND t.expires_at <= ?
-               )
-          )
+      WHERE k.key IN (SELECT t.key FROM redis_hash_field_ttl t WHERE t.expires_at <= ?)
+        AND +k.type = ?
+        AND (k.expires_at IS NULL OR +k.expires_at > ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM redis_hashes h
+           WHERE h.key = k.key
+             AND NOT EXISTS (
+               SELECT 1 FROM redis_hash_field_ttl f
+                WHERE f.key = h.key AND f.field = h.field AND f.expires_at <= ?
+             )
         )`
   ).pluck();
   const scanKeys = db.prepare(
@@ -114,6 +163,7 @@ export function createKeysStorage(db: Database) {
         updateMeta.run(type, expiresAt, setCount, hashCount, zsetCount, now, key);
       } else {
         insert.run(key, type, expiresAt, setCount, hashCount, zsetCount, now);
+        counter.add(1);
       }
     },
 
@@ -180,23 +230,31 @@ export function createKeysStorage(db: Database) {
     },
 
     delete(key: Buffer) {
-      return deleteByKey.run(key);
+      const info = deleteByKey.run(key);
+      counter.add(-info.changes);
+      return info;
     },
 
     deleteAll() {
-      return deleteAll.run().changes;
+      const { changes } = deleteAll.run();
+      counter.add(-changes);
+      return changes;
     },
 
     deleteExpired(now: number) {
-      return deleteExpiredStmt.run(now);
+      const info = deleteExpiredStmt.run(now);
+      counter.add(-info.changes);
+      return info;
     },
 
+    /** Rows in redis_keys, including expired keys not yet removed. */
     count(): number {
-      return countAll.get() ?? 0;
+      return counter.get();
     },
 
+    /** Keys that are logically live at now: excludes expired keys and hashes whose fields all expired. */
     countLive(now: number): number {
-      return countLive.get(now, KEY_TYPES.HASH, now) ?? 0;
+      return counter.get() - countExpired.get(now) - countFieldExpiredHashes.get(now, KEY_TYPES.HASH, now, now);
     },
 
     scan(limit: number, offset: number): Buffer[] {

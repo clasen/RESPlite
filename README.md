@@ -76,6 +76,11 @@ const srv = await createRESPlite({
     maxZsetMembers: 256,
     maxZsetBytes: 256 * 1024,
   },
+  search: {
+    minPrefix: 3,     // FT.SEARCH rejects shorter prefix terms such as "ab*"
+    maxResults: 10_000,
+    timeoutMs: 500,   // 0 disables the default budget
+  },
   commandPolicy: {
     rename: { KEYS: 'SAFE_KEYS' }, // original KEYS is blocked
     disabled: ['MONITOR'],         // blocked as unsupported
@@ -603,6 +608,18 @@ const suggestions = await client.sendCommand(['FT.SUGGET', 'articles', 'sqlite']
 console.log(suggestions);  // → ["sqlite full-text", "sqlite indexing"]
 ```
 
+RESPLite runs one command at a time, so `FT.SEARCH` is bounded to keep a broad query from stalling every client. The `search` option of `createRESPlite()` and `startServer()` sets the guards, modeled on RediSearch:
+
+| Option | Default | Effect |
+|---|---|---|
+| `minPrefix` | `3` | Prefix terms need at least this many characters before `*` (RediSearch `MINPREFIX` defaults to 2). `"ab*"` returns an error instead of making SQLite merge the postings of every term that starts with `ab`. |
+| `maxResults` | `10000` | Matches read per query. The reply's total stops at this value, and results are ranked by BM25 among the matches read, so a capped query ranks only its first `maxResults` matches in index order. |
+| `timeoutMs` | `500` | Time budget per query; `0` disables it. `FT.SEARCH ... TIMEOUT <ms>` overrides it per query, and `TIMEOUT 0` disables it for that query. A query over budget fails with `ERR Timeout limit was reached`. |
+
+`node:sqlite` cannot interrupt a running statement, so the budget is checked between matched rows. The work SQLite does before returning the first match is bounded by `minPrefix`, not by the budget.
+
+`FT.INFO` reads `num_docs`, `fts_rows` and `num_suggestions` from in-memory counters kept in step with every write, so it costs the same on any index size. They are counted once per index when the server starts.
+
 ### Introspection and admin
 
 ```javascript
@@ -904,6 +921,8 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 `INFO [section ...]` returns the Redis text format with the `server`, `clients`, `memory`, `persistence`, `stats` and `keyspace` sections, plus RESPlite's `sqlite` and `cache` sections. Memory figures come from the Node.js process; `redis_version` reports the Redis release whose semantics RESPlite follows and `resplite_version` the package version. `MEMORY USAGE` reports the stored bytes of the key name and its payload in SQLite (exact, so `SAMPLES` is accepted but ignored), not Redis allocator overhead. `MEMORY PURGE` is a no-op.
 
 RESPlite has one logical database, so `FLUSHDB` and `FLUSHALL` have the same effect. Both accept `SYNC` and `ASYNC` for client compatibility, but SQLite completes either form synchronously. A flush removes the keyspace and all `FT.*` indices, documents, and suggestions; internal migration bookkeeping is preserved.
+
+`DBSIZE` and the `keys` figure of `INFO keyspace` read an in-memory key counter kept in step with every write, including expiry, renames, flushes and migration imports; rolled-back writes are undone. Expired keys and hashes whose fields have all expired are not counted, as before; only those still waiting for lazy or active expiry are counted at read time, so the cost follows the expiry backlog rather than the database size. Keys are counted once when the server starts (about 30 ms per million keys on a warm cache), and counted again on the next read after another process commits to the same database.
 
 `HMSET` is retained as a legacy compatibility alias and returns `OK`; new applications should use multi-field `HSET`. Hash field expiration follows Redis 7.4 semantics: `HSET` clears the affected field TTL, while `HINCRBY` and `HINCRBYFLOAT` preserve it.
 

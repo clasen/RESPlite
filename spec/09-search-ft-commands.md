@@ -159,7 +159,9 @@ Return an array of key/value pairs (simple and stable), for example:
 13) "updated_at"   14) (integer unix ms)
 ```
 
-Exact fields may evolve, but these should exist.
+Exact fields may evolve, but these should exist. The three counts are counted once per
+index at startup and kept in memory in step with every write, so `FT.INFO` does not scan
+the index.
 
 ## D.5.3 Errors
 
@@ -285,8 +287,10 @@ FT.GET {index} {doc_id}
 ## D.8.1 Required syntax (your example)
 
 ```
-FT.SEARCH {index} {query} [NOCONTENT] [LIMIT {offset} {count}]
+FT.SEARCH {index} {query} [NOCONTENT] [LIMIT {offset} {count}] [TIMEOUT {ms}]
 ```
+
+`TIMEOUT` overrides the server's `search.timeoutMs` for this query; `0` disables the budget.
 
 Example:
 
@@ -318,6 +322,16 @@ Implementation:
 * Example mapping:
 
   * `clasen*` → `clasen*`
+* A prefix shorter than `search.minPrefix` characters (default 3; RediSearch `MINPREFIX`
+  defaults to 2) is rejected with `ERR prefix "ab*" is shorter than the minimum of 3 characters`.
+
+## D.8.4 Bounded execution
+
+* Matches are read once, in index order, and at most `search.maxResults` (default 10000).
+  The reported total stops at that value; results are ranked by BM25 among the matches read.
+* The time budget (`search.timeoutMs`, default 500 ms) is checked between matched rows;
+  an exceeded budget returns `ERR Timeout limit was reached`. `node:sqlite` offers no
+  progress handler or interrupt, so FTS5 work before the first row is bounded by `minPrefix`.
   * `martin clasen*` → `martin clasen*`
 
 You must escape / reject characters that can break the MATCH syntax.
@@ -841,9 +855,10 @@ Same `DocId` rules as `FT.DEL`. Return: flat array of fields and values, or nil 
 ### FT.SEARCH
 
 ```
-FT.SEARCH IndexName Query ( "NOCONTENT" )? ( "LIMIT" Offset Count )?
+FT.SEARCH IndexName Query ( "NOCONTENT" )? ( "LIMIT" Offset Count )? ( "TIMEOUT" Ms )?
 Offset := Integer (>=0)
 Count  := Integer (>=0)
+Ms     := Integer (>=0)
 ```
 
 Strict rules:

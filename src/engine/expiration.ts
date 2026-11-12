@@ -5,6 +5,7 @@
 
 import type Database from '../storage/sqlite/driver.ts';
 import type { Row } from '../storage/sqlite/driver.ts';
+import { getKeyCounter } from '../storage/sqlite/keys.ts';
 
 export interface ExpirationSweeperOptions {
   db: Database;
@@ -24,6 +25,7 @@ export function createExpirationSweeper(opts: ExpirationSweeperOptions): Expirat
   const { db, clock } = opts;
   const sweepIntervalMs = opts.sweepIntervalMs ?? 1000;
   const maxKeysPerSweep = opts.maxKeysPerSweep ?? 500;
+  const keyCounter = getKeyCounter(db);
 
   const deleteExpiredStmt = db.prepare(
     'DELETE FROM redis_keys WHERE key IN (SELECT key FROM redis_keys WHERE expires_at IS NOT NULL AND expires_at <= ? LIMIT ?)'
@@ -48,7 +50,7 @@ export function createExpirationSweeper(opts: ExpirationSweeperOptions): Expirat
     for (const key of affected.values()) {
       const row = countHashStmt.get(key);
       const n = row ? row.n : 0;
-      if (n === 0) deleteKeyStmt.run(key);
+      if (n === 0) keyCounter.add(-deleteKeyStmt.run(key).changes);
       else updateHashCountStmt.run(n, key);
     }
   });
@@ -57,7 +59,7 @@ export function createExpirationSweeper(opts: ExpirationSweeperOptions): Expirat
 
   function sweep(): void {
     const now = clock();
-    deleteExpiredStmt.run(now, maxKeysPerSweep);
+    keyCounter.add(-deleteExpiredStmt.run(now, maxKeysPerSweep).changes);
     const pairs = selectExpiredFieldsStmt.all(now, maxKeysPerSweep);
     if (pairs.length > 0) sweepFieldsTxn(pairs);
   }

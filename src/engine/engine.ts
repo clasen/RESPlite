@@ -10,7 +10,7 @@ import { createSetsStorage } from '../storage/sqlite/sets.ts';
 import { createListsStorage } from '../storage/sqlite/lists.ts';
 import { createZsetsStorage } from '../storage/sqlite/zsets.ts';
 import { createUsageStorage } from '../storage/sqlite/usage.ts';
-import { clearSearchData } from '../storage/sqlite/search.ts';
+import { clearSearchData, loadSearchCounts, resolveSearchLimits } from '../storage/sqlite/search.ts';
 import { createBlockingManager } from '../blocking/manager.ts';
 import { runInTransaction } from '../storage/sqlite/tx.ts';
 import { matchPattern } from '../util/patterns.ts';
@@ -21,12 +21,15 @@ import type Database from '../storage/sqlite/driver.ts';
 import type { Cache, CacheValues } from '../cache/cache.ts';
 import type { BlockingManager } from '../blocking/manager.ts';
 import type { KeyMeta } from '../storage/sqlite/keys.ts';
+import type { SearchOptions } from '../storage/sqlite/search.ts';
 
 
 export interface EngineOptions {
   db: Database;
   cache?: Cache | null;
   clock?: () => number;
+  /** FT.SEARCH guards. */
+  search?: SearchOptions;
 }
 
 /** Keys, fields, members and values accept strings and are stored as Buffers. */
@@ -99,6 +102,8 @@ export function createEngine(opts: EngineOptions) {
   const lists = createListsStorage(db, keys);
   const zsets = createZsetsStorage(db, keys);
   const usage = createUsageStorage(db);
+  const searchLimits = resolveSearchLimits(opts.search);
+  loadSearchCounts(db);
 
   const CACHE_MISS = Symbol('cache-miss');
 
@@ -1452,6 +1457,7 @@ export function createEngine(opts: EngineOptions) {
     _lists: lists,
     _zsets: zsets,
     _clock: clock,
+    _searchLimits: searchLimits,
     _blockingManager: null as BlockingManager | null,
   };
   engine._blockingManager = createBlockingManager(engine, { clock });

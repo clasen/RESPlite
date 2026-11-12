@@ -282,3 +282,49 @@ describe('Search persistence', () => {
     await s2.closeAsync();
   });
 });
+
+describe('Search guards integration', () => {
+  let s;
+  let port;
+
+  before(async () => {
+    s = await createTestServer({ search: { maxResults: 2 } });
+    port = s.port;
+    await sendCommand(port, argv('FT.CREATE', 'guards', 'SCHEMA', 'payload', 'TEXT'));
+    for (const id of ['g1', 'g2', 'g3']) {
+      await sendCommand(port, argv('FT.ADD', 'guards', id, '1', 'FIELDS', 'payload', `guard ${id}`));
+    }
+  });
+
+  after(async () => {
+    await s.closeAsync();
+  });
+
+  it('FT.SEARCH rejects prefixes shorter than the default minPrefix of 3', async () => {
+    const reply = tryParseValue(await sendCommand(port, argv('FT.SEARCH', 'guards', 'gu*', 'NOCONTENT')), 0).value;
+    assert.match(reply.error, /^ERR prefix "gu\*" is shorter than the minimum of 3 characters/);
+    const ok = tryParseValue(await sendCommand(port, argv('FT.SEARCH', 'guards', 'gua*', 'NOCONTENT')), 0).value;
+    assert.equal(ok[0], 2);
+  });
+
+  it('FT.SEARCH caps the total at maxResults and accepts TIMEOUT', async () => {
+    const reply = tryParseValue(
+      await sendCommand(port, argv('FT.SEARCH', 'guards', 'guard', 'NOCONTENT', 'LIMIT', '0', '10', 'TIMEOUT', '1000')),
+      0
+    ).value;
+    assert.equal(reply[0], 2);
+    assert.equal(reply.length, 3);
+    const bad = tryParseValue(await sendCommand(port, argv('FT.SEARCH', 'guards', 'guard', 'TIMEOUT', 'x')), 0).value;
+    assert.equal(bad.error, 'ERR invalid timeout');
+  });
+
+  it('FT.INFO reports maintained counts', async () => {
+    await sendCommand(port, argv('FT.SUGADD', 'guards', 'guard', '1'));
+    await sendCommand(port, argv('FT.DEL', 'guards', 'g3'));
+    const arr = tryParseValue(await sendCommand(port, argv('FT.INFO', 'guards')), 0).value.map((x) => (Buffer.isBuffer(x) ? x.toString('utf8') : x));
+    const field = (name) => arr[arr.indexOf(name) + 1];
+    assert.equal(field('num_docs'), 2);
+    assert.equal(field('fts_rows'), 2);
+    assert.equal(field('num_suggestions'), 1);
+  });
+});

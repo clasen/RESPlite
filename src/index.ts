@@ -17,6 +17,7 @@ import type { AddressInfo, Server, Socket } from 'node:net';
 import type Database from './storage/sqlite/driver.ts';
 import type { ExpirationSweeper } from './engine/expiration.ts';
 import type { CacheOptions } from './cache/cache.ts';
+import type { SearchOptions } from './storage/sqlite/search.ts';
 import type { CommandPolicy } from './commands/registry.ts';
 import type { ScriptingPlugin } from './scripting/plugin.ts';
 
@@ -34,6 +35,8 @@ export interface StartServerOptions {
   pragma?: Record<string, string | number>;
   /** Hot data cache configuration, or false to disable it. */
   cache?: false | CacheOptions;
+  /** FT.SEARCH guards: minPrefix, maxResults, timeoutMs. */
+  search?: SearchOptions;
   /** If true, register SIGTERM/SIGINT to close server and DB. Set false if you handle shutdown yourself. Default true. */
   gracefulShutdown?: boolean;
   /** Optional: rename/disable commands for hardening. */
@@ -60,7 +63,7 @@ export function startServer(options: StartServerOptions = {}): void {
     const cache = options.cache === false
       ? createCache({ enabled: false })
       : createCache({ enabled: true, ...(options.cache ?? {}) });
-    const engine = createEngine({ db, cache });
+    const engine = createEngine({ db, cache, search: options.search });
     sweeper = createExpirationSweeper({
       db,
       clock: () => Date.now(),

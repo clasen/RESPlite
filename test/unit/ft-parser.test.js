@@ -155,6 +155,22 @@ describe('FT parser', () => {
       const r = parseFtSearch([buf('n'), buf('q'), buf('LIMIT'), buf('-1'), buf('10')]);
       assert.equal(r.error, 'ERR invalid limit');
     });
+
+    it('accepts TIMEOUT and leaves it unset by default', () => {
+      assert.equal(parseFtSearch([buf('n'), buf('q')]).timeoutMs, undefined);
+      const r = parseFtSearch([buf('n'), buf('q'), buf('TIMEOUT'), buf('250'), buf('NOCONTENT')]);
+      assert.ok(!r.error);
+      assert.equal(r.timeoutMs, 250);
+      assert.equal(r.noContent, true);
+      assert.equal(parseFtSearch([buf('n'), buf('q'), buf('TIMEOUT'), buf('0')]).timeoutMs, 0);
+    });
+
+    it('rejects a missing or invalid TIMEOUT', () => {
+      assert.equal(parseFtSearch([buf('n'), buf('q'), buf('TIMEOUT')]).error, 'ERR syntax error');
+      for (const value of ['-1', '1.5', 'abc', '']) {
+        assert.equal(parseFtSearch([buf('n'), buf('q'), buf('TIMEOUT'), buf(value)]).error, 'ERR invalid timeout');
+      }
+    });
   });
 
   describe('parseFtSugadd', () => {

@@ -15,7 +15,7 @@ import { tmpDbPath } from './tmp.js';
 export function createTestServer(options = {}) {
   const dbPath = options.dbPath || tmpDbPath();
   const db = openDb(dbPath);
-  const engine = createEngine({ db });
+  const engine = createEngine({ db, search: options.search });
   const hooks = options.hooks || {};
   const commandPolicy = compileCommandPolicy(options.commandPolicy ?? null);
   const pubSub = createPubSubBroker();

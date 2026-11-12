@@ -143,9 +143,10 @@ export function parseFtGet(args: Buffer[]): ParseResult<{ indexName: string; doc
 }
 
 /**
- * Parse FT.SEARCH args: IndexName Query [NOCONTENT] [LIMIT offset count]
+ * Parse FT.SEARCH args: IndexName Query [NOCONTENT] [LIMIT offset count] [TIMEOUT ms]
+ * TIMEOUT 0 disables the time budget for this query, as in RediSearch.
  */
-export function parseFtSearch(args: Buffer[]): ParseResult<{ indexName: string; query: string; noContent: boolean; offset: number; count: number }> {
+export function parseFtSearch(args: Buffer[]): ParseResult<{ indexName: string; query: string; noContent: boolean; offset: number; count: number; timeoutMs?: number }> {
   if (!args || args.length < 2) return { error: 'ERR syntax error' };
   expectUtf8(args[0]);
   expectUtf8(args[1]);
@@ -155,10 +156,18 @@ export function parseFtSearch(args: Buffer[]): ParseResult<{ indexName: string; 
   let noContent = false;
   let offset = 0;
   let count = 10;
+  let timeoutMs: number | undefined;
   let i = 2;
   while (i < args.length) {
     const tok = toStr(args[i]).toUpperCase();
-    if (tok === 'NOCONTENT') {
+    if (tok === 'TIMEOUT') {
+      if (i + 1 >= args.length) return { error: 'ERR syntax error' };
+      expectUtf8(args[i + 1]);
+      const raw = toStr(args[i + 1]);
+      if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) return { error: 'ERR invalid timeout' };
+      timeoutMs = Number(raw);
+      i += 2;
+    } else if (tok === 'NOCONTENT') {
       noContent = true;
       i += 1;
     } else if (tok === 'LIMIT') {
@@ -175,7 +184,7 @@ export function parseFtSearch(args: Buffer[]): ParseResult<{ indexName: string; 
       return { error: 'ERR syntax error' };
     }
   }
-  return { indexName, query, noContent, offset, count };
+  return { indexName, query, noContent, offset, count, timeoutMs };
 }
 
 /**

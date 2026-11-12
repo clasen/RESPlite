@@ -4,7 +4,7 @@
  */
 
 import type Database from './driver.ts';
-import type { SQLInputValue } from './driver.ts';
+import type { SQLInputValue, Statement } from './driver.ts';
 
 export interface SearchField {
   name: string;
@@ -25,10 +25,51 @@ export interface IndexMeta {
   schema: IndexSchema;
 }
 
+/** Server-level FT.SEARCH guards, modeled on RediSearch MINPREFIX, MAXSEARCHRESULTS and TIMEOUT. */
+export interface SearchOptions {
+  /** Minimum characters before `*` in a prefix term. Default 3. */
+  minPrefix?: number;
+  /** Matches counted and ranked per query; the reported total stops here. Default 10000. */
+  maxResults?: number;
+  /** Default per-query time budget in ms; 0 disables it. FT.SEARCH TIMEOUT overrides it. Default 500. */
+  timeoutMs?: number;
+}
+
+export type SearchLimits = Required<SearchOptions>;
+
+export class SearchTimeoutError extends Error {
+  constructor() {
+    super('ERR Timeout limit was reached');
+  }
+}
+
 const INDEX_NAME_RE = /^[A-Za-z][A-Za-z0-9:_-]{0,63}$/;
 const MAX_SEARCH_LIMIT = 1000;
 const DEFAULT_SEARCH_OFFSET = 0;
 const DEFAULT_SEARCH_COUNT = 10;
+/** Rows read between deadline checks. */
+const DEADLINE_CHECK_ROWS = 64;
+
+/**
+ * Resolve FT.SEARCH guards. Throws on invalid values so misconfiguration fails at startup.
+ */
+export function resolveSearchLimits(opts: SearchOptions = {}): SearchLimits {
+  const limits = {
+    minPrefix: opts.minPrefix ?? 3,
+    maxResults: opts.maxResults ?? 10000,
+    timeoutMs: opts.timeoutMs ?? 500,
+  };
+  if (!Number.isSafeInteger(limits.minPrefix) || limits.minPrefix < 1) {
+    throw new Error('invalid search option: minPrefix must be a positive integer');
+  }
+  if (!Number.isSafeInteger(limits.maxResults) || limits.maxResults < 1) {
+    throw new Error('invalid search option: maxResults must be a positive integer');
+  }
+  if (!Number.isSafeInteger(limits.timeoutMs) || limits.timeoutMs < 0) {
+    throw new Error('invalid search option: timeoutMs must be a non-negative integer');
+  }
+  return Object.freeze(limits);
+}
 
 /**
  * Validate index name (D.12.1). Throws if invalid.
@@ -51,6 +92,73 @@ function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
+export interface IndexCounts {
+  num_docs: number;
+  fts_rows: number;
+  num_suggestions: number;
+}
+
+interface SearchCounters {
+  dataVersionStmt: Statement;
+  dataVersion: number;
+  byIndex: Map<string, IndexCounts>;
+}
+
+const searchCounters = new WeakMap<Database, SearchCounters>();
+
+/**
+ * In-memory FT.INFO counts per index for a connection. An index is counted once,
+ * when first needed (loadSearchCounts does it at startup), then kept in step by the
+ * writes below; rolled-back deltas are undone. Commits by other connections change
+ * PRAGMA data_version, which drops the counts so they are taken again.
+ */
+function indexCounts(db: Database, idx: string): IndexCounts {
+  let state = searchCounters.get(db);
+  const dataVersionStmt = state?.dataVersionStmt ?? db.prepare('PRAGMA data_version').pluck();
+  const dataVersion: number = dataVersionStmt.get();
+  if (!state || state.dataVersion !== dataVersion) {
+    state = { dataVersionStmt, dataVersion, byIndex: new Map() };
+    searchCounters.set(db, state);
+  }
+  let counts = state.byIndex.get(idx);
+  if (!counts) {
+    const count = (suffix: string): number =>
+      db.prepare(`SELECT COUNT(*) FROM ${quoteIdentifier(tableName(idx, suffix))}`).pluck().get();
+    counts = { num_docs: count('docs'), fts_rows: count('fts'), num_suggestions: count('sugs') };
+    state.byIndex.set(idx, counts);
+  }
+  return counts;
+}
+
+/**
+ * Apply a delta to an index's in-memory count after the write that caused it.
+ * Writers take `counts` from indexCounts before writing, so a first count never
+ * includes the write it is about to be bumped for.
+ */
+function bumpCount(db: Database, counts: IndexCounts, column: keyof IndexCounts, delta: number): void {
+  counts[column] += delta;
+  db.onRollback(() => {
+    counts[column] -= delta;
+  });
+}
+
+/** Forget the counts of every index, so they are counted again when next needed. */
+function resetSearchCounts(db: Database): void {
+  searchCounters.get(db)?.byIndex.clear();
+  db.onRollback(() => searchCounters.get(db)?.byIndex.clear());
+}
+
+/**
+ * Count every index now, so no client command pays for the first full count.
+ * Full scans of each index: run once when the server starts.
+ */
+export function loadSearchCounts(db: Database): void {
+  for (const name of db.prepare('SELECT name FROM search_indices').pluck().all()) {
+    validateIndexName(name);
+    indexCounts(db, name);
+  }
+}
+
 /**
  * Remove all RESP-visible search indices, documents and suggestions.
  * Migration bookkeeping is intentionally stored separately and is not touched.
@@ -65,6 +173,7 @@ export function clearSearchData(db: Database): void {
   }
   db.prepare('DELETE FROM search_indices').run();
   db.prepare('DELETE FROM search_rowid_allocator').run();
+  resetSearchCounts(db);
 }
 
 /**
@@ -88,6 +197,7 @@ function encodeFtsFieldValues(fieldNames: string[], fields: Record<string, strin
  */
 function deleteFtsRow(
   db: Database,
+  counts: IndexCounts,
   ftsTableName: string,
   ftsRowid: number,
   fieldNames: string[],
@@ -101,6 +211,7 @@ function deleteFtsRow(
     ftsRowid,
     ...values
   );
+  bumpCount(db, counts, 'fts_rows', -1);
 }
 
 /**
@@ -223,6 +334,7 @@ export function addDocument(
   fields: Record<string, string>,
 ): void {
   const meta = getIndexMeta(db, idx);
+  const counts = indexCounts(db, idx);
   const fieldNames = getSortedFieldNames(meta.schema);
   for (const k of Object.keys(fields)) {
     if (!fieldNames.includes(k)) throw new Error('ERR unknown field');
@@ -245,7 +357,7 @@ export function addDocument(
       const oldDoc = db.prepare(`SELECT fields_json FROM ${docsT} WHERE doc_id = ?`).get(docId);
       if (oldDoc?.fields_json) {
         const oldFields = JSON.parse(oldDoc.fields_json);
-        deleteFtsRow(db, ftsT, previousRowid, fieldNames, oldFields);
+        deleteFtsRow(db, counts, ftsT, previousRowid, fieldNames, oldFields);
       }
     } else {
       ftsRowid = allocateFtsRowid(db, docmapT);
@@ -261,6 +373,7 @@ export function addDocument(
       db.prepare(
         `INSERT INTO ${docsT}(doc_id, score, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`
       ).run(docId, score, fieldsJson, now, now);
+      bumpCount(db, counts, 'num_docs', 1);
     }
 
     const ftsColumns = ['rowid', ...fieldNames];
@@ -268,6 +381,7 @@ export function addDocument(
     const placeholders = ftsValues.map(() => '?').join(', ');
     const colList = ftsColumns.join(', ');
     db.prepare(`INSERT INTO ${ftsT}(${colList}) VALUES (${placeholders})`).run(...ftsValues);
+    bumpCount(db, counts, 'fts_rows', 1);
   });
 
   run();
@@ -298,6 +412,7 @@ export function getDocumentFields(db: Database, idx: string, docId: string): (st
 
 export function deleteDocument(db: Database, idx: string, docId: string): number {
   const meta = getIndexMeta(db, idx);
+  const counts = indexCounts(db, idx);
   const fieldNames = getSortedFieldNames(meta.schema);
   const docsT = tableName(idx, 'docs');
   const docmapT = tableName(idx, 'docmap');
@@ -310,9 +425,10 @@ export function deleteDocument(db: Database, idx: string, docId: string): number
     const docRow = db.prepare(`SELECT fields_json FROM ${docsT} WHERE doc_id = ?`).get(docId);
     if (docRow?.fields_json) {
       const fields = JSON.parse(docRow.fields_json);
-      deleteFtsRow(db, ftsT, row.fts_rowid, fieldNames, fields);
+      deleteFtsRow(db, counts, ftsT, row.fts_rowid, fieldNames, fields);
     }
-    db.prepare(`DELETE FROM ${docsT} WHERE doc_id = ?`).run(docId);
+    const deletedDocs = db.prepare(`DELETE FROM ${docsT} WHERE doc_id = ?`).run(docId).changes;
+    bumpCount(db, counts, 'num_docs', -Number(deletedDocs));
     db.prepare(`DELETE FROM ${docmapT} WHERE doc_id = ?`).run(docId);
   })();
   return 1;
@@ -333,9 +449,11 @@ export function deleteDocument(db: Database, idx: string, docId: string): number
  * optional trailing "*" for prefix queries.
  *
  * Reject control characters and unsafe MATCH breakers: " ' \ and non-printable.
+ * Prefix terms shorter than minPrefix characters are rejected: FTS5 merges the
+ * posting lists of every matching term before returning the first row.
  * @returns Safe MATCH expression e.g. "martin NOT clasen*"
  */
-function buildMatchExpression(query: string): string {
+function buildMatchExpression(query: string, minPrefix: number): string {
   if (typeof query !== 'string') throw new Error('ERR invalid query');
   const trimmed = query.trim();
   if (trimmed === '') throw new Error('ERR invalid query');
@@ -367,6 +485,12 @@ function buildMatchExpression(query: string): string {
     }
   }
 
+  for (const token of tokens) {
+    if (token.endsWith('*') && [...token].length - 1 < minPrefix) {
+      throw new Error(`ERR prefix "${token}" is shorter than the minimum of ${minPrefix} characters`);
+    }
+  }
+
   for (let i = 0; i < tokens.length; i += 1) {
     if (tokens[i] === 'NOT') {
       if (i === 0 || i === tokens.length - 1 || tokens[i + 1] === 'NOT') {
@@ -378,53 +502,79 @@ function buildMatchExpression(query: string): string {
   return tokens.join(' ');
 }
 
+export interface SearchQueryOptions {
+  offset?: number;
+  count?: number;
+  noContent?: boolean;
+  limits?: SearchLimits;
+  /** Per-query time budget in ms (0 = none); defaults to limits.timeoutMs. */
+  timeoutMs?: number;
+  /** Monotonic ms clock for the time budget. */
+  clock?: () => number;
+}
+
 /**
- * Search index. Returns { total, docIds, fieldsByDoc? }. FTS5 bm25: more negative = better, so ORDER BY bm25 ASC.
+ * Search index. Returns { total, docIds, fieldsByDoc? }.
+ *
+ * Reads matches in one pass in index order, stopping after limits.maxResults
+ * (the reported total is capped there) and ranking only what was read:
+ * FTS5 bm25 is more negative for better matches, so lower bm25 * score ranks first.
+ * The time budget is checked between rows; node:sqlite cannot interrupt a
+ * running step, so FTS5 setup work before the first row is bounded only by minPrefix.
  */
 export function search(
   db: Database,
   idx: string,
   query: string,
-  options: { offset?: number; count?: number; noContent?: boolean } = {},
+  options: SearchQueryOptions = {},
 ): { total: number; docIds: string[]; fieldsByDoc: Record<string, Record<string, string>> | undefined } {
   getIndexMeta(db, idx);
-  const matchExpr = buildMatchExpression(query);
+  const limits = options.limits ?? resolveSearchLimits();
+  const matchExpr = buildMatchExpression(query, limits.minPrefix);
   const offset = Math.max(0, options.offset ?? DEFAULT_SEARCH_OFFSET);
-  let count = options.count ?? DEFAULT_SEARCH_COUNT;
+  const count = options.count ?? DEFAULT_SEARCH_COUNT;
   if (count < 0 || count > MAX_SEARCH_LIMIT) throw new Error('ERR invalid limit');
   const noContent = options.noContent === true;
+  const clock = options.clock ?? performance.now.bind(performance);
+  const timeoutMs = options.timeoutMs ?? limits.timeoutMs;
+  const deadline = timeoutMs > 0 ? clock() + timeoutMs : Infinity;
 
   const docsT = tableName(idx, 'docs');
   const docmapT = tableName(idx, 'docmap');
   const ftsT = tableName(idx, 'fts');
 
-  const totalRow = db
+  const matches = db
     .prepare(
-      `SELECT COUNT(*) AS c FROM ${ftsT} f JOIN ${docmapT} m ON f.rowid = m.fts_rowid WHERE ${ftsT} MATCH ?`
+      `SELECT m.doc_id, bm25(${ftsT}) * d.score AS rank
+         FROM ${ftsT} f
+         JOIN ${docmapT} m ON f.rowid = m.fts_rowid
+         JOIN ${docsT} d ON d.doc_id = m.doc_id
+        WHERE ${ftsT} MATCH ?`
     )
-    .get(matchExpr);
-  const total = totalRow?.c ?? 0;
+    .raw()
+    .iterate(matchExpr);
 
-  const orderExpr = `bm25(${ftsT}) * d.score ASC`;
-  const joinSql = `${ftsT} f JOIN ${docmapT} m ON f.rowid = m.fts_rowid JOIN ${docsT} d ON d.doc_id = m.doc_id`;
-  const whereSql = `${ftsT} MATCH ?`;
+  const ranked: { docId: string; rank: number; order: number }[] = [];
+  for (const [docId, rank] of matches) {
+    if (ranked.length % DEADLINE_CHECK_ROWS === 0 && clock() > deadline) throw new SearchTimeoutError();
+    ranked.push({ docId, rank, order: ranked.length });
+    if (ranked.length >= limits.maxResults) break;
+  }
+  if (clock() > deadline) throw new SearchTimeoutError();
 
-  const rows = db
-    .prepare(
-      `SELECT m.doc_id, d.fields_json FROM ${joinSql} WHERE ${whereSql} ORDER BY ${orderExpr} LIMIT ? OFFSET ?`
-    )
-    .all(matchExpr, count, offset);
+  ranked.sort((x, y) => x.rank - y.rank || x.order - y.order);
+  const docIds = ranked.slice(offset, offset + count).map((r) => r.docId);
 
-  const docIds = rows.map((r) => r.doc_id);
   let fieldsByDoc: Record<string, Record<string, string>> | undefined;
   if (!noContent) {
+    const fieldsStmt = db.prepare(`SELECT fields_json FROM ${docsT} WHERE doc_id = ?`).pluck();
     fieldsByDoc = {};
-    for (const r of rows) {
-      fieldsByDoc[r.doc_id] = JSON.parse(r.fields_json);
+    for (const docId of docIds) {
+      fieldsByDoc[docId] = JSON.parse(fieldsStmt.get(docId));
     }
   }
 
-  return { total, docIds, fieldsByDoc };
+  return { total: ranked.length, docIds, fieldsByDoc };
 }
 
 /**
@@ -440,6 +590,7 @@ export function suggestionAdd(
   payload?: string,
 ): number {
   getIndexMeta(db, idx);
+  const counts = indexCounts(db, idx);
   const sugsT = tableName(idx, 'sugs');
   const now = Date.now();
   const existing = db.prepare(`SELECT score FROM ${sugsT} WHERE term = ?`).get(term);
@@ -459,6 +610,7 @@ export function suggestionAdd(
     payload ?? null,
     now
   );
+  bumpCount(db, counts, 'num_suggestions', 1);
   return 1;
 }
 
@@ -497,21 +649,18 @@ export function suggestionGet(
  */
 export function suggestionDel(db: Database, idx: string, term: string): number {
   getIndexMeta(db, idx);
+  const counts = indexCounts(db, idx);
   const sugsT = tableName(idx, 'sugs');
   const info = db.prepare(`DELETE FROM ${sugsT} WHERE term = ?`).run(term);
-  return info.changes > 0 ? 1 : 0;
+  if (info.changes === 0) return 0;
+  bumpCount(db, counts, 'num_suggestions', -1);
+  return 1;
 }
 
 /**
- * Get counts for FT.INFO: num_docs, fts_rows, num_suggestions.
+ * Get maintained counts for FT.INFO: num_docs, fts_rows, num_suggestions.
  */
-export function getIndexCounts(db: Database, idx: string): { num_docs: number; fts_rows: number; num_suggestions: number } {
+export function getIndexCounts(db: Database, idx: string): IndexCounts {
   getIndexMeta(db, idx);
-  const docsT = tableName(idx, 'docs');
-  const ftsT = tableName(idx, 'fts');
-  const sugsT = tableName(idx, 'sugs');
-  const numDocs = db.prepare(`SELECT COUNT(*) AS c FROM ${docsT}`).get().c;
-  const ftsRows = db.prepare(`SELECT COUNT(*) AS c FROM ${ftsT}`).get().c;
-  const numSugs = db.prepare(`SELECT COUNT(*) AS c FROM ${sugsT}`).get().c;
-  return { num_docs: numDocs, fts_rows: ftsRows, num_suggestions: numSugs };
+  return { ...indexCounts(db, idx) };
 }
