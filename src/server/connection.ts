@@ -8,6 +8,7 @@ import { encode, encodeSimpleString, encodeError } from '../resp/encoder.ts';
 import { registerMonitorClient, unregisterMonitorClient, broadcastMonitorCommand } from './monitor.ts';
 import { createPubSubOutput } from '../pubsub/output.ts';
 import { createServerStats } from './stats.ts';
+import { connectionConfig } from './config.ts';
 import type { Socket } from 'node:net';
 import type { CommandPolicy, CompiledCommandPolicy, DispatchResult } from '../commands/registry.ts';
 import type { PubSubBroker } from '../pubsub/broker.ts';
@@ -128,27 +129,49 @@ export function handleConnection(
     return false;
   }
 
-  // A pipelined chunk is committed as one SQLite transaction when every command
-  // replies inline; commands that write outside the reply stream run one by one.
-  function canBatch(commands: Buffer[][]): boolean {
-    if (commands.length < 2 || context.monitorMode || context.pubSubMode || pubSubOutput) return false;
-    for (const argv of commands) {
-      const name = argv[0] ? resolveCommandName(argv[0].toString('utf8'), compiledCommandPolicy) : null;
-      if (name !== null && UNBATCHED_COMMANDS.has(name)) return false;
-    }
-    return true;
+  // Parsed commands not yet run. Each turn runs them for at most turnBudgetMs and
+  // then yields, so one long pipeline cannot starve the other connections.
+  let queue: Buffer[][] = [];
+  let next = 0;
+  let turnScheduled = false;
+  let blocked = false;
+  let stopped = false;
+  let inputPaused = false;
+
+  function pauseInput(): void {
+    if (inputPaused) return;
+    inputPaused = true;
+    socket.pause();
   }
 
-  function processBatch(commands: Buffer[][]): void {
+  function commandName(argv: Buffer[]): string | null {
+    return argv[0] ? resolveCommandName(argv[0].toString('utf8'), compiledCommandPolicy) : null;
+  }
+
+  function isBatchable(argv: Buffer[] | undefined): boolean {
+    if (!argv) return false;
+    const name = commandName(argv);
+    return name === null || !UNBATCHED_COMMANDS.has(name);
+  }
+
+  // Consecutive commands that reply inline are committed as one SQLite transaction;
+  // commands that write outside the reply stream run one by one.
+  function canBatch(): boolean {
+    if (queue.length - next < 2 || context.monitorMode || context.pubSubMode || pubSubOutput) return false;
+    return isBatchable(queue[next]) && isBatchable(queue[next + 1]);
+  }
+
+  function processBatch(deadline: number): void {
+    const first = next;
     pendingReplies = [];
     let replies: Buffer[];
     try {
-      engine.runBatch(() => processCommands(commands));
+      engine.runBatch(() => processCommands(deadline, true));
       replies = pendingReplies;
     } catch (err) {
       const msg = err && (err as Error).message ? (err as Error).message : String(err);
       const reply = encodeError(msg.startsWith('ERR ') ? msg : 'ERR ' + msg);
-      replies = commands.map(() => reply);
+      replies = queue.slice(first, next).map(() => reply);
     } finally {
       pendingReplies = null;
     }
@@ -158,65 +181,114 @@ export function handleConnection(
     socket.uncork();
   }
 
+  function runTurn(): void {
+    turnScheduled = false;
+    const deadline = performance.now() + connectionConfig.turnBudgetMs;
+    while (next < queue.length && !blocked && !stopped && !socket.destroyed) {
+      if (canBatch()) processBatch(deadline);
+      else processCommands(deadline, false);
+      if (performance.now() >= deadline) break;
+    }
+    if (stopped || socket.destroyed || next >= queue.length) {
+      queue = [];
+      next = 0;
+      if (inputPaused && !blocked && !stopped && !socket.destroyed) {
+        inputPaused = false;
+        socket.resume();
+      }
+      return;
+    }
+    if (blocked) return;
+    // Stop reading while commands are queued so TCP backpressure still applies.
+    pauseInput();
+    scheduleTurn();
+  }
+
+  function scheduleTurn(): void {
+    if (turnScheduled) return;
+    turnScheduled = true;
+    setImmediate(runTurn);
+  }
+
   socket.on('data', (chunk) => {
     reader.feed(chunk);
     const commands = reader.parseCommands();
-    if (canBatch(commands)) processBatch(commands);
-    else processCommands(commands);
+    if (stopped || commands.length === 0) return;
+    for (const argv of commands) queue.push(argv);
+    if (!blocked && !turnScheduled) runTurn();
   });
 
-  function processCommands(commands: Buffer[][]): void {
-    for (const argv of commands) {
+  /**
+   * Run queued commands until the deadline. A batch stops before the first command
+   * that cannot be batched; outside a batch one command runs per call.
+   */
+  function processCommands(deadline: number, batched: boolean): void {
+    while (next < queue.length) {
       if (socket.destroyed) return;
+      const argv = queue[next];
+      if (batched && !isBatchable(argv)) return;
+      next++;
       const cmd = argv[0] ? argv[0].toString('utf8').toUpperCase() : '';
       const resolvedCommand = resolveCommandName(cmd, compiledCommandPolicy);
       if (context.monitorMode && resolvedCommand !== 'QUIT') {
         writeResponse(encodeError('ERR MONITOR mode only supports QUIT'));
-        continue;
-      }
-      if (context.pubSubMode && !PUBSUB_MODE_COMMANDS.has(resolvedCommand)) {
+      } else if (context.pubSubMode && !PUBSUB_MODE_COMMANDS.has(resolvedCommand)) {
         writeResponse(encodeError(
           `ERR Can't execute '${cmd.toLowerCase()}': only SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PING and QUIT are allowed in this context`
         ));
-        continue;
-      }
-      serverStats.totalCommandsProcessed++;
-      const out = dispatch(engine, argv, context);
-      // SQLite rolls back the whole transaction on some errors (e.g. disk full);
-      // stop so later commands do not run outside the batch.
-      if (pendingReplies && !engine._db.inTransaction) throw new Error('ERR batch transaction was rolled back');
-      if (resolvedCommand === 'MONITOR' && !out.error) {
-        context.monitorMode = true;
-        registerMonitorClient(context);
-      } else if (!context.monitorMode) {
-        broadcastMonitorCommand(argv, context);
-      }
-      if (out.quit) {
-        writeResult(out);
+      } else if (runCommand(argv, resolvedCommand)) {
         return;
       }
-      if (out.block) {
-        const { keys, kind, timeoutSeconds } = out.block;
-        const blockingManager = engine._blockingManager;
-        if (!blockingManager) {
-          writeResponse(encodeError('ERR blocking not available'));
-          continue;
-        }
-        const resolve: WaiterResolve = (value) => {
-          const buf = value === null ? encode(null) : encode(value);
-          context.writeResponse(buf);
-          socket.resume();
-        };
-        const err = blockingManager.registerWaiter(keys, kind, timeoutSeconds, resolve, connectionId);
-        if (err.error) {
-          writeResponse(encodeError(err.error));
-          continue;
-        }
-        socket.pause();
-        return;
-      }
-      if (writeResult(out)) return;
+      if (!batched || performance.now() >= deadline) return;
     }
+  }
+
+  /** @returns true when the connection stops reading commands (QUIT, blocked, closed). */
+  function runCommand(argv: Buffer[], resolvedCommand: string | null): boolean {
+    serverStats.totalCommandsProcessed++;
+    const out = dispatch(engine, argv, context);
+    // SQLite rolls back the whole transaction on some errors (e.g. disk full);
+    // stop so later commands do not run outside the batch.
+    if (pendingReplies && !engine._db.inTransaction) throw new Error('ERR batch transaction was rolled back');
+    if (resolvedCommand === 'MONITOR' && !out.error) {
+      context.monitorMode = true;
+      registerMonitorClient(context);
+    } else if (!context.monitorMode) {
+      broadcastMonitorCommand(argv, context);
+    }
+    if (out.quit) {
+      stopped = true;
+      writeResult(out);
+      return true;
+    }
+    if (out.block) {
+      const { keys, kind, timeoutSeconds } = out.block;
+      const blockingManager = engine._blockingManager;
+      if (!blockingManager) {
+        writeResponse(encodeError('ERR blocking not available'));
+        return false;
+      }
+      const resolve: WaiterResolve = (value) => {
+        const buf = value === null ? encode(null) : encode(value);
+        context.writeResponse(buf);
+        blocked = false;
+        // Waiters are released from another connection's command; continue on a later turn.
+        scheduleTurn();
+      };
+      const err = blockingManager.registerWaiter(keys, kind, timeoutSeconds, resolve, connectionId);
+      if (err.error) {
+        writeResponse(encodeError(err.error));
+        return false;
+      }
+      blocked = true;
+      pauseInput();
+      return true;
+    }
+    if (writeResult(out)) {
+      stopped = true;
+      return true;
+    }
+    return false;
   }
 
   socket.on('close', () => {

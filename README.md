@@ -776,7 +776,7 @@ const srv = await createRESPlite({
 
 ### Pipelining
 
-Commands that arrive together in one pipelined read (for example, concurrent calls from the `redis` client in the same tick) run in a single SQLite write transaction, and their replies are sent once it commits. This removes most of the per-command commit cost. Each command still succeeds or fails on its own, and replies keep their order. `QUIT`, `MONITOR`, blocking and subscription commands are never batched.
+Pipelined commands (for example, concurrent calls from the `redis` client in the same tick) are grouped into SQLite write transactions of up to 10 ms of work each, and each group's replies are sent once it commits. This removes most of the per-command commit cost. Between groups the connection yields, so one client's long pipeline does not stall the others. As in Redis, a pipeline is not atomic: other clients can run commands between its groups. Each command still succeeds or fails on its own, and replies keep their order. `QUIT`, `MONITOR`, blocking and subscription commands are never batched; commands queued behind a blocking command run once it returns.
 
 A batch holds the database write lock until it commits. If several processes write to the same `.db` file, they wait for each other's batches.
 

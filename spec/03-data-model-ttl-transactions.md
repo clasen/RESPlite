@@ -164,8 +164,8 @@ Individual commands retain their existing SQLite transaction boundaries. A scrip
 
 ### 16.5 Pipelined command batches
 
-When one read from a client socket yields several complete commands, the server runs them inside one SQLite write transaction (`BEGIN IMMEDIATE`) and sends all their replies after it commits. Each command keeps its own transaction as a savepoint, so a command error rolls back only that command and the rest of the batch continues; replies keep their order.
+Each connection queues the commands it reads and runs them in turns of at most `connectionConfig.turnBudgetMs` (10 ms). Consecutive queued commands run inside one SQLite write transaction (`BEGIN IMMEDIATE`) that commits when the turn's budget is spent, and their replies are sent after it commits. Each command keeps its own transaction as a savepoint, so a command error rolls back only that command and the rest of the batch continues; replies keep their order. After each turn the connection yields to the event loop and stops reading from its socket until its queue is empty, so other connections run between turns. A pipeline is therefore not atomic: other clients can observe and change data between its batches.
 
-A batch is not used when the connection is in MONITOR or Pub/Sub mode, or when the batch contains `QUIT`, `MONITOR`, a blocking command (`BLPOP`, `BRPOP`) or a subscription command. Those commands run one by one, each with its own transaction boundaries.
+A batch is not used when the connection is in MONITOR or Pub/Sub mode, and it ends before `QUIT`, `MONITOR`, a blocking command (`BLPOP`, `BRPOP`) or a subscription command. Those commands run one by one, each with its own transaction boundaries. Commands queued behind a blocking command run after it returns.
 
-If the batch transaction itself fails, nothing it wrote is kept: every command in the batch receives an error and the hot cache is cleared. A batch holds the database write lock until it commits, including batches that only read.
+If the batch transaction itself fails, nothing it wrote is kept: every command that ran in that batch receives an error and the hot cache is cleared; queued commands after it run in later batches. A batch holds the database write lock until it commits, including batches that only read.
