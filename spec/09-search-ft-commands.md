@@ -159,9 +159,9 @@ Return an array of key/value pairs (simple and stable), for example:
 13) "updated_at"   14) (integer unix ms)
 ```
 
-Exact fields may evolve, but these should exist. The three counts are counted once per
-index at startup and kept in memory in step with every write, so `FT.INFO` does not scan
-the index.
+Exact fields may evolve, but these should exist. The three counts are kept in memory in
+step with every write, restored at startup from the snapshot saved at the last clean
+shutdown or else counted once per index, so `FT.INFO` does not scan the index.
 
 ## D.5.3 Errors
 

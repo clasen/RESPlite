@@ -94,7 +94,7 @@ Supported:
 
 Supported:
 
-- `DBSIZE` (reads an in-memory key counter counted at startup and kept in step with writes; keys and hashes already expired but not yet removed are subtracted at read time)
+- `DBSIZE` (reads an in-memory key counter kept in step with writes, restored at startup from the snapshot saved at the last clean shutdown or else counted; keys and hashes already expired but not yet removed are subtracted at read time)
 - `FLUSHDB [ASYNC | SYNC]`
 - `FLUSHALL [ASYNC | SYNC]`
 

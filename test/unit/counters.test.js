@@ -19,6 +19,9 @@ import {
   getIndexCounts,
   clearSearchData,
 } from '../../src/storage/sqlite/search.ts';
+import { saveCounterSnapshot } from '../../src/storage/sqlite/counter-snapshot.ts';
+import { createRESPlite } from '../../src/embed.ts';
+import Database from '../../src/storage/sqlite/driver.ts';
 import { tmpDbPath } from '../helpers/tmp.js';
 
 /** Full-scan definition of a live key that DBSIZE kept before the counter existed. */
@@ -364,5 +367,127 @@ describe('Maintained search index counters', () => {
     assertIndexCounters(db, 'idx');
     assert.deepEqual(getIndexCounts(db, 'idx'), { num_docs: 1, fts_rows: 1, num_suggestions: 0 });
     db.close();
+  });
+});
+
+describe('Counter snapshot', () => {
+  /** Open a database whose last clean shutdown stored the given snapshot values. */
+  function seedDatabase() {
+    const dbPath = tmpDbPath();
+    const db = openDb(dbPath);
+    const engine = createEngine({ db });
+    engine.set('a', '1');
+    engine.set('b', '1');
+    createIndex(db, 'idx', [{ name: 'payload', type: 'TEXT' }]);
+    addDocument(db, 'idx', 'd1', 1, false, { payload: 'hello' });
+    return { dbPath, db, engine };
+  }
+
+  /** Overwrite stored values while no RESPlite connection is open. */
+  function tamper(dbPath, values) {
+    const raw = new Database(dbPath);
+    const update = raw.prepare('UPDATE resplite_counter_snapshot SET value = ? WHERE name = ?');
+    for (const [name, value] of Object.entries(values)) assert.equal(update.run(value, name).changes, 1);
+    raw.close();
+  }
+
+  function snapshotRows(dbPath) {
+    const raw = new Database(dbPath);
+    const rows = raw.prepare('SELECT name, value FROM resplite_counter_snapshot ORDER BY name').all();
+    raw.close();
+    return rows.map((r) => [r.name, r.value]);
+  }
+
+  it('starts from the counts saved at a clean shutdown instead of counting', () => {
+    const { dbPath, db } = seedDatabase();
+    saveCounterSnapshot(db);
+    db.close();
+    assert.deepEqual(snapshotRows(dbPath), [
+      ['keys', 2],
+      ['search.idx.fts_rows', 1],
+      ['search.idx.num_docs', 1],
+      ['search.idx.num_suggestions', 0],
+    ]);
+
+    // Values no full count could produce prove the snapshot was used.
+    tamper(dbPath, { keys: 500, 'search.idx.num_docs': 700 });
+    const reopened = openDb(dbPath);
+    const engine = createEngine({ db: reopened });
+    assert.equal(engine.dbsize(), 500);
+    assert.equal(getIndexCounts(reopened, 'idx').num_docs, 700);
+    engine.set('c', '1');
+    assert.equal(engine.dbsize(), 501);
+    assert.deepEqual(snapshotRows(dbPath), [], 'opening claims the snapshot');
+    reopened.close();
+  });
+
+  it('counts after a shutdown that did not save, such as a crash', () => {
+    const { dbPath, db } = seedDatabase();
+    saveCounterSnapshot(db);
+    db.close();
+    tamper(dbPath, { keys: 500 });
+
+    const crashed = openDb(dbPath);
+    createEngine({ db: crashed }).set('c', '1');
+    crashed.close();
+
+    const reopened = openDb(dbPath);
+    const engine = createEngine({ db: reopened });
+    assert.equal(engine.dbsize(), 3);
+    assert.deepEqual(getIndexCounts(reopened, 'idx'), { num_docs: 1, fts_rows: 1, num_suggestions: 0 });
+    reopened.close();
+  });
+
+  it('ignores the snapshot when another connection commits before it is used', () => {
+    const { dbPath, db } = seedDatabase();
+    saveCounterSnapshot(db);
+    db.close();
+    tamper(dbPath, { keys: 500, 'search.idx.num_docs': 700 });
+
+    const reopened = openDb(dbPath);
+    const other = openDb(dbPath);
+    createEngine({ db: other }).set('from-other', '1');
+    other.close();
+
+    const engine = createEngine({ db: reopened });
+    assert.equal(engine.dbsize(), 3);
+    assert.equal(getIndexCounts(reopened, 'idx').num_docs, 1);
+    reopened.close();
+  });
+
+  it('saves counts revalidated against other connections', () => {
+    const { dbPath, db } = seedDatabase();
+    const other = openDb(dbPath);
+    createEngine({ db: other }).set('from-other', '1');
+    addDocument(other, 'idx', 'd2', 1, false, { payload: 'world' });
+    other.close();
+
+    saveCounterSnapshot(db);
+    db.close();
+    const rows = new Map(snapshotRows(dbPath));
+    assert.equal(rows.get('keys'), 3);
+    assert.equal(rows.get('search.idx.num_docs'), 2);
+  });
+
+  it('does not reuse saved index counts after a flush', () => {
+    const { dbPath, db } = seedDatabase();
+    saveCounterSnapshot(db);
+    db.close();
+    tamper(dbPath, { 'search.idx.num_docs': 700 });
+
+    const reopened = openDb(dbPath);
+    const engine = createEngine({ db: reopened, search: {} });
+    engine.flushDatabase();
+    createIndex(reopened, 'idx', [{ name: 'payload', type: 'TEXT' }]);
+    assert.deepEqual(getIndexCounts(reopened, 'idx'), { num_docs: 0, fts_rows: 0, num_suggestions: 0 });
+    assert.equal(engine.dbsize(), 0);
+    reopened.close();
+  });
+
+  it('is saved when an embedded server closes', async () => {
+    const dbPath = tmpDbPath();
+    const srv = await createRESPlite({ db: dbPath, gracefulShutdown: false });
+    await srv.close();
+    assert.deepEqual(snapshotRows(dbPath), [['keys', 0]]);
   });
 });

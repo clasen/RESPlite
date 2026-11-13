@@ -4,6 +4,7 @@
 
 import { KEY_TYPES } from './schema.ts';
 import type Database from './driver.ts';
+import { registerCounterSource, takeSnapshotValue } from './counter-snapshot.ts';
 
 /** A redis_keys row. expiresAt is a BigInt when it exceeds the safe integer range. */
 export interface KeyMeta {
@@ -41,7 +42,8 @@ export interface KeyCounter {
 const keyCounters = new WeakMap<Database, KeyCounter>();
 
 /**
- * In-memory row count of redis_keys for a connection, counted once when first requested.
+ * In-memory row count of redis_keys for a connection, taken from the counter snapshot
+ * of the last clean shutdown or else counted once when first requested.
  * Every statement on this connection that inserts or deletes redis_keys rows reports
  * its change count; rolled-back deltas are undone. Commits by other connections change
  * PRAGMA data_version, which triggers one recount.
@@ -52,7 +54,7 @@ export function getKeyCounter(db: Database): KeyCounter {
   const countRows = db.prepare('SELECT COUNT(*) FROM redis_keys').pluck();
   const dataVersion = db.prepare('PRAGMA data_version').pluck();
   let seenVersion = dataVersion.get();
-  let value: number = countRows.get();
+  let value: number = takeSnapshotValue(db, 'keys', seenVersion) ?? countRows.get();
   counter = {
     get() {
       const version = dataVersion.get();
@@ -72,6 +74,8 @@ export function getKeyCounter(db: Database): KeyCounter {
     },
   };
   keyCounters.set(db, counter);
+  const current = counter;
+  registerCounterSource(db, () => [['keys', current.get()]]);
   return counter;
 }
 

@@ -10,6 +10,7 @@ import path from 'node:path';
 import { applyPragmas } from './pragmas.ts';
 import { applySchema } from './schema.ts';
 import { applyMigrationSchema } from './migration-schema.ts';
+import { claimCounterSnapshot } from './counter-snapshot.ts';
 
 /**
  * Options: pragmaTemplate (default|performance|safety|minimal), pragma (custom key-value overrides), plus any node:sqlite DatabaseSync options.
@@ -32,5 +33,6 @@ export function openDb(dbPath: string, options: OpenDbOptions = {}): Database {
   applyPragmas(db, pragmaTemplate, customPragma);
   applySchema(db);
   applyMigrationSchema(db);
+  claimCounterSnapshot(db);
   return db;
 }

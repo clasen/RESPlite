@@ -618,7 +618,7 @@ RESPLite runs one command at a time, so `FT.SEARCH` is bounded to keep a broad q
 
 `node:sqlite` cannot interrupt a running statement, so the budget is checked between matched rows. The work SQLite does before returning the first match is bounded by `minPrefix`, not by the budget.
 
-`FT.INFO` reads `num_docs`, `fts_rows` and `num_suggestions` from in-memory counters kept in step with every write, so it costs the same on any index size. They are counted once per index when the server starts.
+`FT.INFO` reads `num_docs`, `fts_rows` and `num_suggestions` from in-memory counters kept in step with every write, so it costs the same on any index size. Like the key count below, they are restored from the last clean shutdown or counted when the server starts.
 
 ### Introspection and admin
 
@@ -922,7 +922,7 @@ Redis must be listening on port 6379 unless `--redis-port` is provided. To measu
 
 RESPlite has one logical database, so `FLUSHDB` and `FLUSHALL` have the same effect. Both accept `SYNC` and `ASYNC` for client compatibility, but SQLite completes either form synchronously. A flush removes the keyspace and all `FT.*` indices, documents, and suggestions; internal migration bookkeeping is preserved.
 
-`DBSIZE` and the `keys` figure of `INFO keyspace` read an in-memory key counter kept in step with every write, including expiry, renames, flushes and migration imports; rolled-back writes are undone. Expired keys and hashes whose fields have all expired are not counted, as before; only those still waiting for lazy or active expiry are counted at read time, so the cost follows the expiry backlog rather than the database size. Keys are counted once when the server starts (about 30 ms per million keys on a warm cache), and counted again on the next read after another process commits to the same database.
+`DBSIZE` and the `keys` figure of `INFO keyspace` read an in-memory key counter kept in step with every write, including expiry, renames, flushes and migration imports; rolled-back writes are undone. Expired keys and hashes whose fields have all expired are not counted, as before; only those still waiting for lazy or active expiry are counted at read time, so the cost follows the expiry backlog rather than the database size. On a clean shutdown the server saves its counters to the database, and the next start reads them instead of counting. After a crash, a kill, or a process that opened the database without RESPlite's server (such as a migration script), there is no saved snapshot and the server counts every key and index once at startup (about 40 ms per million keys and million documents on a warm cache). While running, counters are counted again on the next read after another process commits to the same database.
 
 `HMSET` is retained as a legacy compatibility alias and returns `OK`; new applications should use multi-field `HSET`. Hash field expiration follows Redis 7.4 semantics: `HSET` clears the affected field TTL, while `HINCRBY` and `HINCRBYFLOAT` preserve it.
 

@@ -18,6 +18,7 @@ import { handleConnection } from './server/connection.ts';
 import { createEngine } from './engine/engine.ts';
 import { createCache } from './cache/cache.ts';
 import { openDb } from './storage/sqlite/db.ts';
+import { saveCounterSnapshot } from './storage/sqlite/counter-snapshot.ts';
 import { compileCommandPolicy } from './commands/registry.ts';
 import { createPubSubBroker } from './pubsub/broker.ts';
 import { createServerStats } from './server/stats.ts';
@@ -228,7 +229,11 @@ export async function createRESPlite({
           return;
         }
         try {
-          db.close();
+          try {
+            saveCounterSnapshot(db);
+          } finally {
+            db.close();
+          }
           resolve();
         } catch (closeError) {
           reject(closeError);

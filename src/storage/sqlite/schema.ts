@@ -3,6 +3,7 @@
  */
 
 import type Database from './driver.ts';
+import { COUNTER_SNAPSHOT_SCHEMA } from './counter-snapshot.ts';
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS redis_keys (
@@ -105,6 +106,7 @@ export const KEY_TYPES = {
  */
 export function applySchema(db: Database): void {
   db.exec(SCHEMA);
+  db.exec(COUNTER_SNAPSHOT_SCHEMA);
   // Backward-compatible migration for databases created before count columns existed.
   const cols = db.prepare('PRAGMA table_info(redis_keys)').all();
   const hasSetCount = cols.some((c) => c.name === 'set_count');

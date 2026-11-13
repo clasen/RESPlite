@@ -11,6 +11,7 @@ import { createEngine } from './engine/engine.ts';
 import { createExpirationSweeper } from './engine/expiration.ts';
 import { createCache } from './cache/cache.ts';
 import { openDb } from './storage/sqlite/db.ts';
+import { saveCounterSnapshot } from './storage/sqlite/counter-snapshot.ts';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AddressInfo, Server, Socket } from 'node:net';
@@ -90,7 +91,11 @@ export function startServer(options: StartServerOptions = {}): void {
     }
     sweeper!.stop();
     scripting?.close();
-    db!.close();
+    try {
+      saveCounterSnapshot(db!);
+    } finally {
+      db!.close();
+    }
   }
   server.once('close', release);
   server.once('error', (error) => {

@@ -5,6 +5,11 @@
 
 import type Database from './driver.ts';
 import type { SQLInputValue, Statement } from './driver.ts';
+import {
+  discardSnapshotValues,
+  registerCounterSource,
+  takeSnapshotValue,
+} from './counter-snapshot.ts';
 
 export interface SearchField {
   name: string;
@@ -107,8 +112,9 @@ interface SearchCounters {
 const searchCounters = new WeakMap<Database, SearchCounters>();
 
 /**
- * In-memory FT.INFO counts per index for a connection. An index is counted once,
- * when first needed (loadSearchCounts does it at startup), then kept in step by the
+ * In-memory FT.INFO counts per index for a connection. An index's counts come from the
+ * counter snapshot of the last clean shutdown, or else it is counted once when first
+ * needed (loadSearchCounts does it at startup); then they are kept in step by the
  * writes below; rolled-back deltas are undone. Commits by other connections change
  * PRAGMA data_version, which drops the counts so they are taken again.
  */
@@ -116,18 +122,44 @@ function indexCounts(db: Database, idx: string): IndexCounts {
   let state = searchCounters.get(db);
   const dataVersionStmt = state?.dataVersionStmt ?? db.prepare('PRAGMA data_version').pluck();
   const dataVersion: number = dataVersionStmt.get();
-  if (!state || state.dataVersion !== dataVersion) {
+  if (!state) {
     state = { dataVersionStmt, dataVersion, byIndex: new Map() };
     searchCounters.set(db, state);
+    registerCounterSource(db, () => searchCountEntries(db));
+  } else if (state.dataVersion !== dataVersion) {
+    state.dataVersion = dataVersion;
+    state.byIndex.clear();
   }
   let counts = state.byIndex.get(idx);
   if (!counts) {
-    const count = (suffix: string): number =>
-      db.prepare(`SELECT COUNT(*) FROM ${quoteIdentifier(tableName(idx, suffix))}`).pluck().get();
-    counts = { num_docs: count('docs'), fts_rows: count('fts'), num_suggestions: count('sugs') };
+    const count = (suffix: keyof IndexCounts, table: string): number =>
+      takeSnapshotValue(db, snapshotName(idx, suffix), dataVersion) ??
+      db.prepare(`SELECT COUNT(*) FROM ${quoteIdentifier(tableName(idx, table))}`).pluck().get();
+    counts = {
+      num_docs: count('num_docs', 'docs'),
+      fts_rows: count('fts_rows', 'fts'),
+      num_suggestions: count('num_suggestions', 'sugs'),
+    };
     state.byIndex.set(idx, counts);
   }
   return counts;
+}
+
+/** Snapshot name of one index count; index names never contain '.'. */
+function snapshotName(idx: string, column: keyof IndexCounts): string {
+  return `search.${idx}.${column}`;
+}
+
+/** Current, revalidated counts of every index this connection has counted. */
+function searchCountEntries(db: Database): [string, number][] {
+  const entries: [string, number][] = [];
+  for (const idx of [...(searchCounters.get(db)?.byIndex.keys() ?? [])]) {
+    const counts = indexCounts(db, idx);
+    for (const column of ['num_docs', 'fts_rows', 'num_suggestions'] as const) {
+      entries.push([snapshotName(idx, column), counts[column]]);
+    }
+  }
+  return entries;
 }
 
 /**
@@ -144,6 +176,7 @@ function bumpCount(db: Database, counts: IndexCounts, column: keyof IndexCounts,
 
 /** Forget the counts of every index, so they are counted again when next needed. */
 function resetSearchCounts(db: Database): void {
+  discardSnapshotValues(db, 'search.');
   searchCounters.get(db)?.byIndex.clear();
   db.onRollback(() => searchCounters.get(db)?.byIndex.clear());
 }
